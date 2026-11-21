@@ -217,13 +217,54 @@ Qt 版在 Windows 上改用 Win32 `RegisterHotKey`：
 
 ### 待办
 
-- [ ] **编译验证**（等 Qt6 装好）与真机冒烟
 - [ ] 首选项里的 `start_minimized` / `high_precision` 目前仍未接线
       （原版也是僵尸字段，保持了行为一致；要接就在 `main.cpp` 里加）
 
-### 验证方式（不依赖 Qt，已做过）
+### 实机验证（2026-11-21，Qt 6.12.0 装好后）
 
-移植过程中写了一批**纯 Win32 验证程序**（放在
+Qt 装在这个机器的 **`E:\Qt`**（不是 C:\Qt），kit 是 `E:\Qt\6.12.0\mingw_64`，
+编译器 `E:\Qt\Tools\mingw1310_64\bin\g++.exe`（GNU 13.1.0），
+CMake `E:\Qt\Tools\CMake_64\bin\cmake.exe`（3.30.5），Ninja `E:\Qt\Tools\Ninja\ninja.exe`。
+**环境变量 `CMAKE_PREFIX_PATH` / QTDIR / Qt6_DIR 全是空的**，必须显式传。
+
+| 项 | 结果 |
+| --- | --- |
+| 首次 configure + build | exit 0，15 步全成功，**零错误零警告，一次通过** |
+| 产物 | `build/release/AutoClickerQt.exe` 0.63 MB + 自动拷入的 Qt6*.dll |
+| 界面 | 915×967 默认 / 576×499 最小 / 1400×900 宽屏 三档截图验证，控件不重叠不裁切 |
+| 打包 | `package.ps1 -Force` exit 0，`dist/` 23 文件 90.9 MB，windeployqt 21 个 DLL |
+| dist 版运行 | 进程起得来、窗口标题正常、`CloseMainWindow` 后剩余 0，config/log 都落在 `dist/` |
+| 三脚本自检 | ps1 / cmd / sh 对同一份 dist 结论与退出码完全一致（0=最新 / 2=过期） |
+
+### 核心 API 自测（`E:\temp\DeepSeekHarness\workspace\.agent-cache\scripts\qt-selftest\`）
+
+独立 CMake 工程，直接链接项目真实源码（`core/click_engine.cpp`、
+`utils/config_manager.cpp`、`utils/app_paths.cpp`、`utils/logger.cpp`），
+不是复刻实现 —— 测的就是发行代码本身。
+
+**29 PASS / 0 FAIL**，覆盖：
+
+- 键名映射 12 项（`F6`=0x75 / `F7`=0x76 / `F12`=0x7B / `a`=0x41 / `Z`=0x5A /
+  `0`=0x30 / `Num0`=0x60 / `Enter`=0x0D / `Space`=0x20 / `ctrl`=0x11 /
+  未知键=0 / `vkToKeyName(0x75)`=="F6"）
+- 窗口枚举 **286 个**；进程分组 **100 组，93 组有窗口**；
+  **同名多进程组 13 个**（证明按 `(pid, name)` 分组、没按名字去重）
+- `isWindow(0)`=false / `windowTitle(0)` 空 / `clientSize(0)` 有效
+- 配置读写：至少 1 个 profile 且含动作、默认热键 F6/F7、
+  **`config.json` 里没有 `target_hwnd`**
+- 引擎生命周期：初始未运行 → start → waitForStop → 未运行
+- **后台模式端到端**（`RUN_BG_TEST=1`）：自建 400×200 窗口挂 `QPushButton`，
+  `ClickEngine::start(profile, &err, hwnd)` 以 background 模式跑 3 轮，
+  主线程持续 `processEvents()` → **按钮实际收到 3 次 `clicked`**。
+  这条才真正证明 `PostMessage` 链路（含 `WM_MOUSEMOVE`）是通的。
+
+自测过程中暴露的两个签名认知错误已修正（不是代码 bug，是我记错了 API）：
+`waitForStop(int)` 返回 **void**；`clientSize()` 返回 **`std::pair<int,int>`**
+（用 `.first` / `.second`，不是 `.width()` / `.height()`）。
+
+### 验证方式（不依赖 Qt，移植阶段做过）
+
+移植时 Qt 还没装，先写了一批**纯 Win32 验证程序**（放在
 `E:\temp\DeepSeekHarness\workspace\.agent-cache\scripts\`），
 用 `g++ -std=c++17 -O2 x.cpp -luser32 -lgdi32` 单独编译运行，
 把 `core/` 里不依赖 Qt 的那部分逻辑原样复刻过去对照：
@@ -235,18 +276,23 @@ Qt 版在 Windows 上改用 Win32 `RegisterHotKey`：
 | `hotkeytest.cpp` | 热键解析、`RegisterHotKey`、冲突检测、注销重注册 | 21/21 PASS |
 
 **这是它比"写完直接等编译"更可靠的地方**：窗口枚举、消息构造、客户区计算
-这些最容易写错的部分，在没有 Qt 的环境里就已经跑通了。
-
+这些最容易写错的部分，在没有 Qt 的环境里就已经跑通了。后来 Qt 装好，
+编译一次就过也印证了这点。
 
 ## 7. 环境
 
 | 项目 | 值 |
 | --- | --- |
-| 编译器 | g++ 14.2.0（`D:\w64devkit\bin\g++.exe`）/ CLion 自带 MinGW |
-| CMake | 4.4.3（`D:\cygwin64\bin\cmake.exe`） |
-| 构建工具 | Ninja 1.13.2（`D:\Path\ninja\ninja.exe`） |
-| Qt | **未安装** |
+| 编译器 | **g++ 13.1.0（`E:\Qt\Tools\mingw1310_64\bin\g++.exe`）** |
+| CMake | **3.30.5（`E:\Qt\Tools\CMake_64\bin\cmake.exe`）** — 打包脚本强制用它，避开 Cygwin 版 |
+| 构建工具 | **Ninja 1.12.1（`E:\Qt\Tools\Ninja\ninja.exe`）** |
+| Qt | **6.12.0，`E:\Qt\6.12.0\mingw_64`**（环境变量全空，需 `-DCMAKE_PREFIX_PATH`） |
 | 平台 | Windows 11 |
+
+> 机器上还有 `D:\cygwin64\bin\cmake.exe`（4.4.3）和 `D:\w64devkit\bin\g++.exe`（14.2.0），
+> 但**不能混用**：Cygwin 的 cmake 会把 Windows 路径改写成 `/cygdrive/d/...`，
+> 传给 `-S` / `-B` 直接报 source directory 不存在。打包脚本里 `Find-CMake`
+> 专门排除了 cygwin / msys / git\usr\bin 路径。
 
 ## 8. 界面要点（从原版继承）
 
@@ -322,30 +368,79 @@ CLion 生成过 `cmake-build-debug/` 之后，即使后来装好 Qt，旧缓存�
 **修法：`GetClientRect` 之前先 `!::IsIconic(h)` 判断。**
 判断顺序比算法本身更容易错，这类"前提条件"要写在代码注释里。
 
-### 9.6 三脚本的产物自检必须按"产物归属"分流
+### 9.6 三脚本的产物自检（经过两次修正才稳定）
 
-打包脚本启动时会先判断 `dist/` 里有没有最新产物。第一版把 `dist/` 里所有
-`*.exe` / `*.zip` / `*.tar.gz` 一视同仁地跟源码比 mtime，结果两个脚本永远报"过期"：
+打包脚本启动时会先判断 `dist/` 里有没有最新产物。这块前前后后改了两次：
 
-- `package.ps1` 打不出 `*.tar.gz`（那是 `package.sh` 的产物），
-- `package.sh` 在非 Windows 上打不出 `*.exe`（那是 `package.ps1` 的产物）。
-
-不属于自己的产物永远比自己"新"不了，所以结论永远是「该重打了」。
+**第一版：全部一视同仁比 mtime → 永远报"过期"。**
+`package.ps1` 打不出 `*.tar.gz`（`package.sh` 的产物），`package.sh` 在非 Windows
+打不出 `*.exe`。不属于自己的产物永远比自己"新"不了，结论永远是「该重打了」。
 自检一旦永远报警，就等于没有自检 —— 没人会再去看它。
 
-**修法**：先按文件名分流归属，别人的产物标 `[跳过]` 且不参与判定；
-再判断日期戳是不是今天的，不是则标 `[归档]`。两道过滤之后才算 mtime。
+**第二版：按归属标 `[跳过]` → 又矫枉过正。**
+Qt 版改完之后，`ps1` 和 Windows 下的 `sh` 产出的是**同一份东西**
+（`dist/AutoClickerQt.exe` + 依赖 + `_win64.zip`），谁跑都能重建。
+还按归属跳过就变成了「ps1 说 dist 里只有 sh 的产物、sh 说只有 ps1 的产物」，
+两边都说没打过包。
 
-**推论（比修法更重要）**：三个脚本的判定逻辑是各写各的（PowerShell / bash /
-cmd 包装），任何一侧改了规则，另外两侧必须同步改，并且**跑一遍对比退出码**。
+**最终版**：
+- 只有 `*_src.tar.gz` / `*_src.zip` 标 `[跳过]`（源码归档只有 `--with-source` 才产）；
+- `exe` 与 `_win64.zip` 不区分来源，都参与判定；
+- 文件名日期戳不是今天的标 `[归档]`，不参与判定；
+- `dist/` 里今天一个产物都没有 → 直接判需要打包。
+
+**还有一个必须处理的细节**：`Copy-Item` / `cp` **保留源文件的 mtime**。
+构建产物 `build/release/AutoClickerQt.exe` 是编译时的时间戳，复制进 `dist/`
+之后如果源码又动过（比如刚好改了打包脚本自己），自检会立刻判「过期」，
+可实际上刚刚部署完。修法是部署后把 mtime 设成当前时间
+（PowerShell `(Get-Item ...).LastWriteTime = Get-Date`，bash `touch`）。
+
+**推论（比修法更重要）**：三个脚本各写各的（PowerShell / bash / cmd 包装），
+任何一侧改了规则，另外两侧必须同步改，并且**跑一遍对比退出码**。
 当前验收方式：`-CheckOnly` / `--check-only` 对同一份 `dist/` 必须返回相同退出码
-和相同的结论行。这是我在 Python 版项目里真踩过的坑，那次就花了三轮才对上。
+和相同的结论行。这是 Python 版项目里真踩过的坑，那次就花了三轮才对上。
 
-### 9.7 Windows 批处理与 PowerShell 文件的编码
+### 9.7 Cygwin 的 cmake 会把路径改写成 /cygdrive/
+
+机器上 `PATH` 里的 `cmake` 是 `D:\cygwin64\bin\cmake.exe`（4.4.3）。
+把它和 Windows 路径一起用，它会先把 `-S D:\xxx\...` 转成
+`/cygdrive/d/xxx/...`，再拼上一次自己算的路径，报：
+
+```
+CMake Error: The source directory "/cygdrive/d/xxx/.../D:/xxx/..." does not exist.
+```
+
+**修法**：`package.ps1` 里的 `Find-CMake` 按顺序找原生 cmake，并显式排除
+`cygwin` / `msys` / `git\usr\bin` 路径：① Qt 安装目录旁的 `Tools\CMake_64`；
+② `PATH` 里第一个非 Cygwin/MSYS 的 cmake；③ 常见原生安装位置。
+Ninja 同理（`Find-Ninja` 优先用 `E:\Qt\Tools\Ninja\ninja.exe`）。
+找到的 ninja 路径还要用 `-DCMAKE_MAKE_PROGRAM=` 显式传给 CMake，
+否则 CMake 仍可能去 PATH 里挑到别的。
+
+### 9.8 数据目录判定：不能靠"向上找 CMakeLists.txt"
+
+`dist/` 就位于源码根下一层。最初的 `AppPaths::sourceRoot()` 逻辑是
+「从 exe 所在目录逐级向上，找到第一个带 `CMakeLists.txt` 的目录就当源码根」——
+这个判定对 `build/release/` 下的开发版是对的，但 **`dist/` 也会命中**，
+结果发行版的 config / log 全写进了源码树，而不是 exe 旁边。
+
+发现方式：跑 `dist\AutoClickerQt.exe`，项目根凭空出现 `log/app_2026-11-21.log`，
+而 `dist/log` 不存在。
+
+**修法**：先判断 exe 路径里有没有构建目录段
+（`build` / `build-*` / `cmake-build-*` / `out`），有才向上找源码根；
+否则直接用 exe 所在目录。
+
+### 9.9 Windows 批处理与 PowerShell 文件的编码
 
 `.ps1` 必须 **UTF-8 带 BOM + CRLF**：没有 BOM 时 PowerShell 5.1 按本地代码页
 （中文系统 = GBK）解码，中文注释全变乱码，然后报一堆假语法错误
 （`Unexpected token`、`The hash literal was incomplete`），跟真实错误毫无关系。
+**`edit` / `write` 工具每次保存都会剥掉 BOM，改完必须重新补**：
+
+```powershell
+[System.IO.File]::WriteAllBytes($p, ([byte[]](0xEF,0xBB,0xBF) + $enc.GetBytes($text)))
+```
 
 `.cmd` 必须 **GBK + CRLF**，且**不要在文件里中途 `chcp 65001`**：
 cmd 是按当前代码页逐字节读批处理的，中途切码页会让后半段文字按旧码页解释而花掉。
@@ -354,6 +449,12 @@ cmd 是按当前代码页逐字节读批处理的，中途切码页会让后半�
 
 `.gitattributes` 里已经按扩展名钉死了这三类，`git add --renormalize` 之后
 就不会再混进来。
+
+### 9.10 QDebug 输出 QString 会带引号
+
+`qCInfo(lcX) << QStringLiteral("热键已注册")` 打印出来是
+`[hotkey] "热键已注册"` —— QDebug 默认给 QString 加引号。日志里看着很别扭。
+修法：`qCInfo(lcX).noquote() << QStringLiteral(...)`。
 
 ---
 

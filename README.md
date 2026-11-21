@@ -105,7 +105,7 @@ cmake --build --preset release
 | --- | --- | --- |
 | `script\package.ps1` | Windows PowerShell 5.1 / 7+ | `dist\AutoClickerQt.exe` + Qt 依赖 + `*_win64.zip` |
 | `script\package.cmd` | Windows cmd（薄包装，内部转调 ps1） | 同上 |
-| `script/package.sh` | Linux / macOS / MSYS2 | `*_src.tar.gz`（有 zip 命令时也出 `*_src.zip`） |
+| `script/package.sh` | MSYS2 / Git Bash（Windows）| 同上；Linux / macOS 上只能出 `*_src.tar.gz` |
 
 ```powershell
 # --- Windows ---
@@ -120,11 +120,14 @@ script\package.cmd -CheckOnly
 ```
 
 ```bash
-# --- Linux / macOS / MSYS2 ---
-./script/package.sh                  # 只打源码包（非 Windows 不编译）
-./script/package.sh --build-exe      # Windows(MSYS2) 下要求收集 Qt 依赖出 exe
+# --- MSYS2 / Git Bash（Windows，能出 exe）---
+./script/package.sh                  # 编译 + 收集依赖，产出 dist/AutoClickerQt.exe
+./script/package.sh --no-exe         # 只编译，不收集依赖
+./script/package.sh --with-source    # 额外打一份源码归档
 ./script/package.sh --check-only
-./script/package.sh --no-build --force
+
+# --- Linux / macOS（出不了可运行的程序）---
+./script/package.sh                  # 只打源码归档
 ```
 
 产物在 `dist/`：
@@ -135,21 +138,31 @@ dist/
 ├── Qt6Core.dll 等运行时 DLL      由 windeployqt 拷贝
 ├── platforms/qwindows.dll
 ├── imageformats/                 GIF 播放需要 qgif.dll
-├── AutoClickerQt_v1.0.0_<日期>_win64.zip   完整绿色包（ps1 产出）
-└── AutoClickerQt_v1.0.0_<日期>_src.tar.gz  源码包（sh 产出）
+├── AutoClickerQt_v1.0.0_<日期>_win64.zip   完整绿色包
+└── AutoClickerQt_v1.0.0_<日期>_src.tar.gz  源码包（--with-source 才有）
 ```
+
+> **`script/package.ps1` 会自动避开 Cygwin / MSYS 版的 cmake**。这类 cmake 会把
+> Windows 路径改写成 `/cygdrive/d/...` 传给 `-S`/`-B`，报「source directory does
+> not exist」。脚本优先用 Qt 自带的 `E:\Qt\Tools\CMake_64\bin\cmake.exe`。
 
 ### 打包前自检
 
 每个脚本启动时都会先看 `dist/` 里有没有今天的产物、是不是比源码新。
-这一步有三个容易做错的地方，都已处理：
+三个容易做错的地方都已处理：
 
 1. **历史归档不算过期**。产物文件名带日期戳，换个日期重打一次，旧文件会一直
    显示「过期」。现在名字里日期戳不是今天的，标 `[归档]` 直接跳过判定。
-2. **别的脚本的产物不参与判定**。`ps1` 永远打不出 `tar.gz`，`sh` 在非 Windows
-   上永远打不出 `exe`。把它们算进来，自检每次都会说「该重打了」，然后你就
-   不再看它了。现在按产物归属分别标 `[跳过]`。
+2. **源码归档默认不参与判定**。`*_src.tar.gz` / `*_src.zip` 只有显式
+   `--with-source` 才产出，默认标 `[跳过]`，否则自检每次都说「该重打了」，
+   然后你就再也不看它了。
 3. **今天一个产物都没有也算需要打包**，哪怕 `dist/` 里躺着一堆历史包。
+
+> 之前还按「谁产出的」跳过 `exe` / `_win64.zip`，后来取消了这个规则：`ps1` 和
+> Windows 下的 `sh` 产出的是同一份东西，谁跑都能重建，没必要区分来源。
+>
+> 另外 `Invoke-Deploy` 复制完 exe 会把它的 mtime 设成当前时间。`Copy-Item` /
+> `cp` 保留的是编译时的 mtime，不这样处理，刚部署完自检就会判「过期」。
 
 三个脚本的实现各写各的（PowerShell / bash），所以改判定规则时**三个都要改，
 并且跑一遍对比退出码**。这是我在上一版项目里真踩过的坑。
@@ -169,8 +182,13 @@ dist/
 数据目录的判定优先级：
 
 1. 环境变量 `AUTOCLICKER_DATA_DIR`（有就用它）
-2. 否则 = **可执行文件所在目录**（发布后就是 exe 同级，绿色软件行为）
-3. 开发期从源码运行时，若前两者都拿不到，回落到项目根
+2. 可执行文件在**构建树**里（路径含 `build/`、`build-*`、`cmake-build-*`、`out/`）
+   → 回落到项目根，方便开发时看配置
+3. 否则 = **可执行文件所在目录**（发布后就是 exe 同级，绿色软件行为）
+
+> 判定 2 只认构建目录前缀，**不能靠「向上找到 CMakeLists.txt」**。`dist/` 就在
+> 源码根下一层，向上找一定会命中 — 结果发行版把 config/log 写进了源码树。
+> 这个 bug 是实机跑 dist 版时发现的。
 
 这样源码运行和 exe 运行不会互相污染配置。
 

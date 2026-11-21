@@ -100,7 +100,7 @@ void ProcessPickerDialog::loadProcesses() {
     m_countLabel->setText(QStringLiteral("共 %1 个进程，其中 %2 个有窗口")
                               .arg(m_listWidget->count())
                               .arg(withWindow));
-    qCInfo(lcPicker) << QStringLiteral("进程列表已加载: %1 个进程, %2 个有窗口")
+    qCInfo(lcPicker).noquote() << QStringLiteral("进程列表已加载: %1 个进程, %2 个有窗口")
                             .arg(m_listWidget->count())
                             .arg(withWindow);
 }

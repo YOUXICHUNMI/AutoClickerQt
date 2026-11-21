@@ -252,7 +252,7 @@ bool HotkeyListener::registerHotkeys(const QString &startKey, const QString &sto
     d->stopRegistered = true;
     d->stopKey = stopKey;
 
-    qCInfo(lcHotkey) << QStringLiteral("热键已注册: 启动=%1, 停止=%2").arg(startKey, stopKey);
+    qCInfo(lcHotkey).noquote() << QStringLiteral("热键已注册: 启动=%1, 停止=%2").arg(startKey, stopKey);
     return true;
 #else
     Q_UNUSED(startKey)
@@ -277,7 +277,7 @@ void HotkeyListener::unregisterAll() {
             ++count;
         }
         if (count > 0) {
-            qCInfo(lcHotkey) << QStringLiteral("已注销 %1 个热键").arg(count);
+            qCInfo(lcHotkey).noquote() << QStringLiteral("已注销 %1 个热键").arg(count);
         }
     }
 #endif

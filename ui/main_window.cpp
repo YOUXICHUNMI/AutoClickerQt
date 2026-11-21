@@ -94,7 +94,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     loadProfilesToUi();
     registerHotkeys();
 
-    qCInfo(lcMain) << QStringLiteral("数据目录: %1").arg(AppPaths::dataDir());
+    qCInfo(lcMain).noquote() << QStringLiteral("数据目录: %1").arg(AppPaths::dataDir());
 }
 
 MainWindow::~MainWindow() {
@@ -441,6 +441,14 @@ void MainWindow::buildTray() {
     m_tray = new QSystemTrayIcon(this);
     m_tray->setToolTip(QStringLiteral("AutoClicker"));
 
+    // 图标必须显式设置，否则 Windows 会打
+    // QSystemTrayIcon::setVisible: No Icon set，托盘里也是空白格
+    QIcon trayIcon(QStringLiteral(":/static/Ralsei.png"));
+    if (trayIcon.isNull()) {
+        trayIcon = style()->standardIcon(QStyle::SP_ComputerIcon);
+    }
+    m_tray->setIcon(trayIcon);
+
     auto *menu = new QMenu(this);
     auto *showAction = menu->addAction(QStringLiteral("显示窗口"));
     connect(showAction, &QAction::triggered, this, [this] {
@@ -621,7 +629,7 @@ void MainWindow::refreshWindows() {
     }
     m_buildingUi = false;
 
-    qCInfo(lcMain) << QStringLiteral("窗口列表已刷新，共 %1 个窗口").arg(windows.size());
+    qCInfo(lcMain).noquote() << QStringLiteral("窗口列表已刷新，共 %1 个窗口").arg(windows.size());
     updatePixelDisplay();
 }
 
@@ -1200,7 +1208,7 @@ void MainWindow::onStart() {
         m_tray->showMessage(QStringLiteral("AutoClicker"), QStringLiteral("连点已启动"),
                             QSystemTrayIcon::Information, 2000);
     }
-    qCInfo(lcMain) << QStringLiteral("连点已启动: 配置=%1").arg(p->name);
+    qCInfo(lcMain).noquote() << QStringLiteral("连点已启动: 配置=%1").arg(p->name);
 }
 
 void MainWindow::onStop() {

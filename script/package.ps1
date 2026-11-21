@@ -218,10 +218,11 @@ function Show-BuildStatus {
 
         # 产物归属：判过期的意义是"提醒我该重打了"。不属于自己的产物永远打不出来，
         # 算进来只会让自检每次都报过期，最后就没人看它了。
-        #   *.tar.gz / *_src.zip → package.sh 的源码包
-        #   本脚本自己产出 *.exe 与 *_win64.zip
-        if ($a.Name -like '*.tar.gz' -or $a.Name -like '*_src.zip') {
-            Write-Host ("  [跳过] {0}  ({1})  package.sh 的产物" -f $a.Name, $sizeMb) -ForegroundColor DarkGray
+        #   *_src.tar.gz / *_src.zip → 源码归档，只有 package.sh --with-source 会产
+        #   本脚本与 package.sh 在 Windows 下都产出 dist\AutoClickerQt.exe + 依赖 + *_win64.zip，
+        #   所以这两类不再按"谁产出的"跳过 —— 谁跑都能重建它们。
+        if ($a.Name -like '*_src.tar.gz' -or $a.Name -like '*_src.zip') {
+            Write-Host ("  [跳过] {0}  ({1})  源码归档，package.sh --with-source 的产物" -f $a.Name, $sizeMb) -ForegroundColor DarkGray
             $skippedCount++
             continue
         }
@@ -277,17 +278,66 @@ function Show-BuildStatus {
     return $allFresh
 }
 
+# ------------------------------------------------------------------ 工具链
+# 必须避开 Cygwin / MSYS 版 cmake：它们把 Windows 路径改写成 /cygdrive/d/...，
+# 传给 -S / -B 会让 CMake 认为源码目录不存在。优先用 Qt 自带的那份。
+function Test-NativeTool {
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path $Path)) { return $false }
+    $norm = $Path.Replace('/', '\').ToLower()
+    if ($norm -match '\\cygwin|\\msys|\\git\\usr\\bin') { return $false }
+    return $true
+}
+
+function Find-CMake {
+    param([string]$Qt)
+
+    # 1) Qt 安装目录旁边通常带一份 CMake（E:\Qt\Tools\CMake_64\bin\cmake.exe）
+    $qtRoot = Split-Path (Split-Path $Qt -Parent) -Parent
+    if ($qtRoot) {
+        $candidate = Join-Path $qtRoot "Tools\CMake_64\bin\cmake.exe"
+        if (Test-NativeTool $candidate) { return (Resolve-Path $candidate).Path }
+    }
+
+    # 2) PATH 里的 cmake，但要排除 Cygwin / MSYS 版本
+    foreach ($c in (Get-Command cmake -All -ErrorAction SilentlyContinue)) {
+        if (Test-NativeTool $c.Source) { return $c.Source }
+    }
+
+    # 3) 常见原生安装位置
+    foreach ($p in @("$env:ProgramFiles\CMake\bin\cmake.exe",
+                     "${env:ProgramFiles(x86)}\CMake\bin\cmake.exe",
+                     "$env:LOCALAPPDATA\Programs\CMake\bin\cmake.exe")) {
+        if (Test-NativeTool $p) { return (Resolve-Path $p).Path }
+    }
+
+    throw @"
+找不到可用的原生 cmake。PATH 里的 cmake 若是 Cygwin / MSYS 版本，会把
+Windows 路径改写成 /cygdrive/... 导致配置失败。请装一份 Windows 原生 CMake
+（或装 Qt 时勾选 Tools > CMake），也可以把它加进 PATH 后重试。
+"@
+}
+
+function Find-Ninja {
+    param([string]$Qt)
+    $qtRoot = Split-Path (Split-Path $Qt -Parent) -Parent
+    if ($qtRoot) {
+        $candidate = Join-Path $qtRoot "Tools\Ninja\ninja.exe"
+        if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
+    }
+    $n = Get-Command ninja -ErrorAction SilentlyContinue
+    if ($n) { return $n.Source }
+    return $null
+}
+
 # ------------------------------------------------------------------ 编译
 function Invoke-Build {
     param([string]$Qt, [string]$Dir)
 
     Write-Step "编译 Release"
 
-    $cmake = Get-Command cmake -ErrorAction SilentlyContinue
-    if (-not $cmake) {
-        throw "找不到 cmake。请安装 CMake 并加入 PATH。"
-    }
-    Write-Info "cmake: $($cmake.Source)"
+    $cmake = Find-CMake -Qt $Qt
+    Write-Info "cmake: $($cmake)"
 
     if ($Clean -and (Test-Path $Dir)) {
         Write-Info "清空构建目录: $Dir"
@@ -302,10 +352,11 @@ function Invoke-Build {
     )
     # 首次配置时自动选生成器；已配置过就沿用缓存里的
     if (-not (Test-Path (Join-Path $Dir "CMakeCache.txt"))) {
-        $ninja = Get-Command ninja -ErrorAction SilentlyContinue
+        $ninja = Find-Ninja -Qt $Qt
         if ($ninja) {
             $configureArgs += @('-G', 'Ninja')
-            Write-Info "生成器: Ninja ($($ninja.Source))"
+            $configureArgs += @("-DCMAKE_MAKE_PROGRAM=$ninja")
+            Write-Info "生成器: Ninja ($ninja)"
         } else {
             Write-Info "生成器: CMake 默认"
         }
@@ -319,7 +370,7 @@ function Invoke-Build {
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & cmake @configureArgs *> $logFile
+        & $cmake @configureArgs *> $logFile
         $code = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $prevEap
@@ -341,7 +392,7 @@ function Invoke-Build {
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & cmake --build $Dir --config Release *> $buildLog
+        & $cmake --build $Dir --config Release *> $buildLog
         $code = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $prevEap
@@ -380,6 +431,9 @@ function Invoke-Deploy {
     }
     New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
     Copy-Item $exePath (Join-Path $DistDir "AutoClickerQt.exe") -Force
+    # Copy-Item 保留的是编译时的 mtime，自检拿它跟源码比会一直判「过期」，
+    # 可实际上刚部署完。这里把部署时间写成当前时间。
+    (Get-Item (Join-Path $DistDir "AutoClickerQt.exe")).LastWriteTime = Get-Date
     Write-Ok "已复制 exe 到 dist\"
 
     $windeployqt = Join-Path $Qt "bin\windeployqt.exe"

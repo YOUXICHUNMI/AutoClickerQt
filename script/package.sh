@@ -1,17 +1,17 @@
 #!/bin/bash
 # AutoClickerQt 打包脚本（Linux / macOS / MSYS2）
 #
-# 用途：编译 Release 版本并产出源码压缩包。
-#
-# 注意：连点功能依赖 Win32 API（SendInput / PostMessage），本脚本在非 Windows
-# 平台上只能编译、不能产出可用的可执行文件。传 --build-exe 会被明确拒绝。
+# 用途：编译 Release 版本并产出可运行的程序。
+#       Windows(MSYS2) 下默认产出一份带全部 Qt 依赖的 dist/，可直接运行；
+#       非 Windows 平台编译不出可用程序（连点依赖 Win32 API），只会打源码归档。
 #
 # 用法：
-#   ./script/package.sh                     # 编译并打包
-#   ./script/package.sh --no-build          # 跳过编译，只打包源码
+#   ./script/package.sh                     # 默认：编译 + 收集依赖
+#   ./script/package.sh --with-source       # 额外打一份源码归档
+#   ./script/package.sh --no-exe            # 只编译，不收集依赖
+#   ./script/package.sh --no-build          # 跳过编译，直接用现有产物
 #   ./script/package.sh --version 1.2.0     # 指定版本号
 #   ./script/package.sh --check-only        # 只检测，不打包（exit 0=最新 / 2=过期）
-#   ./script/package.sh --build-exe         # Windows(MSYS2) 下要求打 exe
 #   ./script/package.sh --force             # 产物最新也强制重打
 #   ./script/package.sh --help
 
@@ -22,10 +22,11 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 VERSION="1.0.0"
 DO_BUILD=1
-DO_ZIP=1
+DO_ZIP=0        # 源码归档只在 --with-source 时产出
 CHECK_ONLY=0
 FORCE=0
-BUILD_EXE=0
+BUILD_EXE=1     # 默认就走编译 + 收集依赖这条主路径
+WITH_SOURCE=0
 
 # ------------------------------------------------------------------ 参数解析
 usage() {
@@ -37,6 +38,8 @@ while [ $# -gt 0 ]; do
         -v|--version)     VERSION="$2"; shift 2 ;;
         --no-build)       DO_BUILD=0; shift ;;
         --no-zip)         DO_ZIP=0; shift ;;
+        --no-exe)         BUILD_EXE=0; shift ;;
+        --with-source)    WITH_SOURCE=1; DO_ZIP=1; shift ;;
         --check-only)     CHECK_ONLY=1; shift ;;
         -e|--build-exe)   BUILD_EXE=1; shift ;;
         -f|--force)       FORCE=1; shift ;;
@@ -135,11 +138,17 @@ show_build_status() {
         # 算进来只会让自检每次都报过期，最后就没人看它了。
         #   本脚本产出 *.tar.gz 与 *_src.zip
         #   *.exe 与 *_win64.zip 是 package.ps1 的（Windows 专用）
+        # 两个脚本在 Windows 下产出的是同一份东西（dist/AutoClickerQt.exe +
+        # 依赖 + _win64.zip），所以不再按「谁产出的」跳过 —— 只有源码归档
+        # 是 --with-source 才产，默认跳过。
         case "$name" in
-            *.exe|*_win64.zip)
-                printf '  %s[跳过]%s %s  (%s)  package.ps1 的产物\n' "$C_DIM" "$C_OFF" "$name" "$size_h"
-                skipped_count=$((skipped_count + 1))
-                continue
+            *_src.tar.gz|*_src.zip)
+                if [ "${WITH_SOURCE:-0}" -eq 0 ]; then
+                    printf '  %s[跳过]%s %s  (%s)  源码归档，需 --with-source 才会重建\n' \
+                        "$C_DIM" "$C_OFF" "$name" "$size_h"
+                    skipped_count=$((skipped_count + 1))
+                    continue
+                fi
                 ;;
         esac
 
@@ -314,6 +323,8 @@ build_exe() {
     rm -rf "$dist"
     mkdir -p "$dist"
     cp "$exe" "$dist/AutoClickerQt.exe"
+    # cp 保留编译时的 mtime，自检会一直判「过期」。写成部署时间。
+    touch "$dist/AutoClickerQt.exe"
     ok "已复制 exe 到 dist/"
 
     "$deployqt" --release --no-translations --no-system-d3d-compiler \
@@ -377,14 +388,28 @@ else
 fi
 
 if [ "$BUILD_EXE" -eq 1 ]; then
-    build_exe || exit 1
+    if [ "$PLATFORM" = "windows" ]; then
+        build_exe || exit 1
+    else
+        step "跳过收集依赖"
+        warn "非 Windows 平台无法产出可运行程序（当前平台: $PLATFORM）"
+    fi
+else
+    step "跳过收集依赖（--no-exe）"
 fi
 
-if [ "$DO_ZIP" -eq 1 ]; then
+if [ "$WITH_SOURCE" -eq 1 ] && [ "$DO_ZIP" -eq 1 ]; then
     pack_source || exit 1
+else
+    step "跳过源码归档"
+    info "用 --with-source 可额外打一份"
 fi
 
 echo ""
 printf '%s打包完成。%s\n' "$C_OK" "$C_OFF"
 info "dist: $PROJECT_DIR/dist"
+if [ -f "$PROJECT_DIR/dist/AutoClickerQt.exe" ]; then
+    size="$(awk -v b="$(stat -c %s "$PROJECT_DIR/dist/AutoClickerQt.exe" 2>/dev/null || echo 0)" 'BEGIN { printf "%.1f MB", b/1048576 }')"
+    ok "可执行文件: dist/AutoClickerQt.exe  ($size)"
+fi
 exit 0
