@@ -101,6 +101,22 @@ cmake --build --preset release
 三个脚本做同一件事，按你的 shell 环境挑一个。**它们的判定结论必须一致**——
 同一份 `dist/` 分别跑一遍，退出码和结论行都要相同。
 
+打包有**两种产物形态**，默认是绿色目录，加一个开关就变成单文件 exe：
+
+| 形态 | 开关 | 产出 | 适合 |
+| --- | --- | --- | --- |
+| 绿色目录（默认） | 不加 | `dist\AutoClickerQt.exe` + 21 个 Qt DLL + `*_win64.zip`（约 39 MB） | 自己用，启动最快 |
+| 单文件 exe | `-SingleExe` / `--single-exe` | `dist\AutoClickerQt.exe` 一个文件（约 17 MB） | 拷给别人，DLL 已内嵌 |
+
+> 单文件模式用 [Enigma Virtual Box](https://enigmaprotector.com/en/downloads.html) 做
+> 文件虚拟化：DLL 不落盘，运行时由 loader 在内存里模拟，所以真的是「一个 exe 拷哪
+> 都能跑」。它需要单独安装（免费），脚本会在 `E:\Tools\EnigmaVB`、
+> `C:\Program Files\Enigma Virtual Box` 和 `ENIGMAVB_DIR` 环境变量里找；
+> 找不到就报错并提示下载地址，不会静默降级。
+>
+> 装了之后 `dist/` 会被清理成只剩那一个 exe（`config/` 和 `log/` 保留，那是运行期
+> 数据）。想换回绿色目录，去掉开关重跑一遍即可。
+
 | 脚本 | 运行环境 | 产出 |
 | --- | --- | --- |
 | `script\package.ps1` | Windows PowerShell 5.1 / 7+ | `dist\AutoClickerQt.exe` + Qt 依赖 + `*_win64.zip` |
@@ -109,19 +125,24 @@ cmake --build --preset release
 
 ```powershell
 # --- Windows ---
-.\script\package.ps1                 # 编译 + windeployqt + 压缩
+.\script\package.ps1                 # 编译 + windeployqt + 压缩（绿色目录）
+.\script\package.ps1 -SingleExe      # 打成单个 exe（需 Enigma Virtual Box）
+.\script\package.ps1 -SingleExe -SkipZip          # 单文件，且不再压缩发布包
+.\script\package.ps1 -EnigmaVBDir "D:\Tools\EVB"  # 手动指定 EVB 安装目录
 .\script\package.ps1 -SkipZip        # 只编译并铺好 dist，不压缩
 .\script\package.ps1 -Version 1.2.0  # 指定版本号
 .\script\package.ps1 -CheckOnly      # 只检测（exit 0=最新 / 2=过期）
 .\script\package.ps1 -Force          # 产物最新也强制重打
 
 # 用 cmd 也一样，参数原样透传
+script\package.cmd -SingleExe
 script\package.cmd -CheckOnly
 ```
 
 ```bash
 # --- MSYS2 / Git Bash（Windows，能出 exe）---
 ./script/package.sh                  # 编译 + 收集依赖，产出 dist/AutoClickerQt.exe
+./script/package.sh --single-exe     # 打成单个 exe（需 Enigma Virtual Box）
 ./script/package.sh --no-exe         # 只编译，不收集依赖
 ./script/package.sh --with-source    # 额外打一份源码归档
 ./script/package.sh --check-only
@@ -130,7 +151,7 @@ script\package.cmd -CheckOnly
 ./script/package.sh                  # 只打源码归档
 ```
 
-产物在 `dist/`：
+绿色目录形态的产物在 `dist/`：
 
 ```
 dist/
@@ -142,14 +163,24 @@ dist/
 └── AutoClickerQt_v1.0.0_<日期>_src.tar.gz  源码包（--with-source 才有）
 ```
 
-> **`script/package.ps1` 会自动避开 Cygwin / MSYS 版的 cmake**。这类 cmake 会把
-> Windows 路径改写成 `/cygdrive/d/...` 传给 `-S`/`-B`，报「source directory does
-> not exist」。脚本优先用 Qt 自带的 `E:\Qt\Tools\CMake_64\bin\cmake.exe`。
+单文件形态只有两样：
+
+```
+dist/
+├── AutoClickerQt.exe            单文件，17 MB，DLL 已内嵌
+└── AutoClickerQt_v1.0.0_<日期>_win64.zip   发布包
+```
+
+> **`script/package.ps1` 和 `package.sh` 都会自动避开 Cygwin / MSYS 版的 cmake**。
+> 这类 cmake 会把 Windows 路径改写成 `/cygdrive/d/...` 传给 `-S`/`-B`，报
+> 「source directory does not exist」。两者都优先用 Qt 自带的
+> `E:\Qt\Tools\CMake_64\bin\cmake.exe`，并在没设 `CMAKE_PREFIX_PATH` 时自动探测
+> `E:\Qt\6.*\mingw_64`。
 
 ### 打包前自检
 
 每个脚本启动时都会先看 `dist/` 里有没有今天的产物、是不是比源码新。
-三个容易做错的地方都已处理：
+四个容易做错的地方都已处理：
 
 1. **历史归档不算过期**。产物文件名带日期戳，换个日期重打一次，旧文件会一直
    显示「过期」。现在名字里日期戳不是今天的，标 `[归档]` 直接跳过判定。
@@ -157,6 +188,9 @@ dist/
    `--with-source` 才产出，默认标 `[跳过]`，否则自检每次都说「该重打了」，
    然后你就再也不看它了。
 3. **今天一个产物都没有也算需要打包**，哪怕 `dist/` 里躺着一堆历史包。
+4. **单文件模式与绿色目录模式互相认为对方是「最新」**。两种形态产出的都是
+   `dist/AutoClickerQt.exe`，所以从一种切到另一种时，脚本会照常判「已是最新」
+   并跳过 —— 这是有意的：**切换形态要带 `-Force`**，否则它不会重新部署。
 
 > 之前还按「谁产出的」跳过 `exe` / `_win64.zip`，后来取消了这个规则：`ps1` 和
 > Windows 下的 `sh` 产出的是同一份东西，谁跑都能重建，没必要区分来源。

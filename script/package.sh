@@ -6,7 +6,8 @@
 #       非 Windows 平台编译不出可用程序（连点依赖 Win32 API），只会打源码归档。
 #
 # 用法：
-#   ./script/package.sh                     # 默认：编译 + 收集依赖
+#   ./script/package.sh                     # 默认：编译 + 收集依赖（绿色目录）
+#   ./script/package.sh --single-exe        # 额外打包成单文件 exe（需 Enigma Virtual Box，仅 Windows）
 #   ./script/package.sh --with-source       # 额外打一份源码归档
 #   ./script/package.sh --no-exe            # 只编译，不收集依赖
 #   ./script/package.sh --no-build          # 跳过编译，直接用现有产物
@@ -27,6 +28,7 @@ CHECK_ONLY=0
 FORCE=0
 BUILD_EXE=1     # 默认就走编译 + 收集依赖这条主路径
 WITH_SOURCE=0
+SINGLE_EXE=0    # 单文件 exe 需 --single-exe 显式开启（Enigma Virtual Box）
 
 # ------------------------------------------------------------------ 参数解析
 usage() {
@@ -40,6 +42,7 @@ while [ $# -gt 0 ]; do
         --no-zip)         DO_ZIP=0; shift ;;
         --no-exe)         BUILD_EXE=0; shift ;;
         --with-source)    WITH_SOURCE=1; DO_ZIP=1; shift ;;
+        --single-exe)     SINGLE_EXE=1; shift ;;
         --check-only)     CHECK_ONLY=1; shift ;;
         -e|--build-exe)   BUILD_EXE=1; shift ;;
         -f|--force)       FORCE=1; shift ;;
@@ -195,19 +198,84 @@ EOF
     fi
 }
 
+# ------------------------------------------------------------------ 工具链探测
+
+# Cygwin/MSYS 自带的 cmake 会把 D:\xxx 改写成 /cygdrive/d/xxx 再传给下游，
+# 结果 CMake 报 "The source directory ... does not exist"。必须挑原生 cmake。
+is_native_tool() {
+    case "$1" in
+        *cygwin*|*Cygwin*|*/msys*|*/MSYS*|*\\msys*|*/git/usr/bin/*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+find_native_cmake() {
+    local cand
+    # 1. Qt 自带的 CMake（装了 Qt 就一定有，且肯定是原生 Windows 版）
+    for cand in "/e/Qt/Tools/CMake_64/bin/cmake.exe" \
+                "/c/Qt/Tools/CMake_64/bin/cmake.exe" \
+                "/d/Qt/Tools/CMake_64/bin/cmake.exe"; do
+        [ -f "$cand" ] && { echo "$cand"; return 0; }
+    done
+    # 2. CMake 官方安装位置
+    for cand in "/c/Program Files/CMake/bin/cmake.exe" \
+                "/c/Program Files (x86)/CMake/bin/cmake.exe"; do
+        [ -f "$cand" ] && { echo "$cand"; return 0; }
+    done
+    # 3. PATH 里第一个非 Cygwin/MSYS 的
+    local p
+    p="$(command -v cmake 2>/dev/null || true)"
+    if [ -n "$p" ] && is_native_tool "$p"; then
+        echo "$p"; return 0
+    fi
+    return 1
+}
+
+find_native_ninja() {
+    local cand
+    for cand in "/e/Qt/Tools/Ninja/ninja.exe" \
+                "/c/Qt/Tools/Ninja/ninja.exe" \
+                "/d/Qt/Tools/Ninja/ninja.exe"; do
+        [ -f "$cand" ] && { echo "$cand"; return 0; }
+    done
+    local p
+    p="$(command -v ninja 2>/dev/null || true)"
+    if [ -n "$p" ] && is_native_tool "$p"; then
+        echo "$p"; return 0
+    fi
+    return 1
+}
+
+# 没设 CMAKE_PREFIX_PATH 时，猜一个 Qt6 安装位置
+guess_qt_prefix() {
+    local root ver
+    for root in /e/Qt /c/Qt /d/Qt "/c/Program Files/Qt" "/e/Program Files/Qt"; do
+        [ -d "$root" ] || continue
+        for ver in $(ls -1 "$root" 2>/dev/null | grep -E '^6\.[0-9]+(\.[0-9]+)?$' | sort -rV); do
+            if [ -f "$root/$ver/mingw_64/lib/cmake/Qt6/Qt6Config.cmake" ]; then
+                echo "$root/$ver/mingw_64"; return 0
+            fi
+            if [ -f "$root/$ver/msvc2022_64/lib/cmake/Qt6/Qt6Config.cmake" ]; then
+                echo "$root/$ver/msvc2022_64"; return 0
+            fi
+        done
+    done
+    return 1
+}
+
 # ------------------------------------------------------------------ 编译
 do_build() {
     step "编译 Release"
 
     local cmake_bin
-    cmake_bin="$(command -v cmake || true)"
+    cmake_bin="$(find_native_cmake)"
     if [ -z "$cmake_bin" ]; then
-        err "找不到 cmake，请先安装"
+        err "找不到原生 cmake（Cygwin/MSYS 里那个会把 D:\\ 路径改写成 /cygdrive/d/，不能用）"
         return 1
     fi
     info "cmake: $cmake_bin"
 
-    local qt_prefix="${CMAKE_PREFIX_PATH:-${QTDIR:-}}"
+    local qt_prefix="${QT_PREFIX:-${CMAKE_PREFIX_PATH:-${QTDIR:-}}}"
     local build_dir="$PROJECT_DIR/build/release"
     local args=(-S "$PROJECT_DIR" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release)
 
@@ -215,16 +283,26 @@ do_build() {
         args+=("-DCMAKE_PREFIX_PATH=$qt_prefix")
         info "Qt: $qt_prefix"
     else
-        warn "CMAKE_PREFIX_PATH / QTDIR 都没设置，CMake 可能找不到 Qt6"
+        local guessed
+        if guessed="$(guess_qt_prefix)"; then
+            qt_prefix="$guessed"
+            args+=("-DCMAKE_PREFIX_PATH=$qt_prefix")
+            info "Qt: $qt_prefix（自动探测）"
+        else
+            warn "CMAKE_PREFIX_PATH / QTDIR / QT_PREFIX 都没设置，CMake 可能找不到 Qt6"
+        fi
     fi
 
-    if [ ! -f "$build_dir/CMakeCache.txt" ] && command -v ninja >/dev/null 2>&1; then
-        args+=(-G Ninja)
-        info "生成器: Ninja"
+    if [ ! -f "$build_dir/CMakeCache.txt" ]; then
+        local ninja_bin
+        if ninja_bin="$(find_native_ninja)"; then
+            args+=(-G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja_bin")
+            info "生成器: Ninja ($ninja_bin)"
+        fi
     fi
 
-    info "配置: cmake ${args[*]}"
-    if ! cmake "${args[@]}" > /tmp/autoclickerqt_configure.log 2>&1; then
+    info "配置: $cmake_bin ${args[*]}"
+    if ! "$cmake_bin" "${args[@]}" > /tmp/autoclickerqt_configure.log 2>&1; then
         err "配置失败"
         tail -40 /tmp/autoclickerqt_configure.log | sed 's/^/    /'
         mkdir -p "$PROJECT_DIR/build"
@@ -235,7 +313,7 @@ do_build() {
     ok "配置成功"
 
     info "编译中..."
-    if ! cmake --build "$build_dir" --config Release > /tmp/autoclickerqt_build.log 2>&1; then
+    if ! "$cmake_bin" --build "$build_dir" --config Release > /tmp/autoclickerqt_build.log 2>&1; then
         err "编译失败"
         tail -60 /tmp/autoclickerqt_build.log | sed 's/^/    /'
         mkdir -p "$PROJECT_DIR/build"
@@ -309,14 +387,18 @@ build_exe() {
     fi
     info "可执行文件: $exe"
 
-    local qt_prefix="${CMAKE_PREFIX_PATH:-${QTDIR:-}}"
+    local qt_prefix="${QT_PREFIX:-${CMAKE_PREFIX_PATH:-${QTDIR:-}}}"
+    if [ -z "$qt_prefix" ] || [ ! -d "$qt_prefix" ]; then
+        local guessed
+        if guessed="$(guess_qt_prefix)"; then qt_prefix="$guessed"; fi
+    fi
     local deployqt
-    if command -v windeployqt >/dev/null 2>&1; then
-        deployqt="$(command -v windeployqt)"
-    elif [ -n "$qt_prefix" ] && [ -f "$qt_prefix/bin/windeployqt.exe" ]; then
+    if [ -n "$qt_prefix" ] && [ -f "$qt_prefix/bin/windeployqt.exe" ]; then
         deployqt="$qt_prefix/bin/windeployqt.exe"
+    elif command -v windeployqt >/dev/null 2>&1; then
+        deployqt="$(command -v windeployqt)"
     else
-        err "找不到 windeployqt，请设置 CMAKE_PREFIX_PATH 指向 Qt6 安装目录"
+        err "找不到 windeployqt，请设置 CMAKE_PREFIX_PATH 或 QT_PREFIX 指向 Qt6 安装目录"
         return 1
     fi
 
@@ -328,7 +410,8 @@ build_exe() {
     ok "已复制 exe 到 dist/"
 
     "$deployqt" --release --no-translations --no-system-d3d-compiler \
-                --no-opengl-sw --compiler-runtime "$dist/AutoClickerQt.exe" >/dev/null 2>&1 || \
+                --no-system-dxc-compiler --no-opengl-sw --compiler-runtime \
+                "$dist/AutoClickerQt.exe" >/dev/null 2>&1 || \
         warn "windeployqt 返回非零，请检查依赖是否完整"
 
     # GIF 播放依赖 qgif.dll
@@ -343,6 +426,199 @@ build_exe() {
         warn "缺少 platforms/qwindows.dll —— 运行时可能报找不到平台插件"
     fi
     ok "依赖收集完成"
+}
+
+# ================================================================ 单文件 exe（Enigma Virtual Box）
+
+# 找 Enigma Virtual Box 的 enigmavbconsole.exe
+find_enigmavb() {
+    local cand
+    if [ -n "${ENIGMAVB_DIR:-}" ] && [ -f "$ENIGMAVB_DIR/enigmavbconsole.exe" ]; then
+        echo "$ENIGMAVB_DIR"; return 0
+    fi
+    for cand in "/e/Tools/EnigmaVB" "/c/Program Files/Enigma Virtual Box" \
+                "/c/Program Files (x86)/Enigma Virtual Box" \
+                "${LOCALAPPDATA:-}/Enigma Virtual Box" \
+                "${PROGRAMFILES:-}/Enigma Virtual Box"; do
+        if [ -n "$cand" ] && [ -f "$cand/enigmavbconsole.exe" ]; then
+            echo "$cand"; return 0
+        fi
+    done
+    if command -v enigmavbconsole.exe >/dev/null 2>&1; then
+        dirname "$(command -v enigmavbconsole.exe)"; return 0
+    fi
+    return 1
+}
+
+# 把 MSYS 路径转成 Windows 原生路径（EVB 只认反斜杠形式）
+win_path() {
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -w "$1" 2>/dev/null || echo "$1"
+    else
+        # 没有 cygpath 时手工转换：/e/foo -> E:\foo
+        local p="$1"
+        if [[ "$p" =~ ^/([a-zA-Z])/(.*)$ ]]; then
+            printf '%s:\\%s' "$(echo "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]')" "${BASH_REMATCH[2]//\//\\}"
+        else
+            echo "$p"
+        fi
+    fi
+}
+
+# XML 转义（& 必须先换，否则会把后面换出来的 &amp; 再换一次）
+xml_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# 递归输出目录树节点到 .evb（与 package.ps1 的 New-EvbProjectFile 等价）。
+# 关键：EVB 里文件的 <Name> 写成 "platforms\qwindows.dll" 是无效的 ——
+# 它不会自动创建中间目录，结果被平铺到根目录，Qt 就找不到平台插件。
+# 每一层目录都必须显式写一个 <Type>3</Type> 节点。
+evb_emit_dir() {
+    local dir="$1" prefix="$2" pad="$3" f name
+
+    # 先输出本层的文件。
+    # 主程序自身与归档包必须排除：把 AutoClickerQt.exe 当成虚拟文件再嵌一遍，
+    # 会和真实入口冲突，跑起来直接访问违例（0xC0000005）。
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        name="$(basename "$f")"
+        case "$name" in
+            AutoClickerQt.exe|*.zip|*.tar.gz) continue ;;
+        esac
+        {
+            printf '%s<File>\n' "$pad"
+            printf '%s\t<Type>2</Type>\n' "$pad"
+            printf '%s\t<Name>%s</Name>\n' "$pad" "$(xml_escape "$name")"
+            printf '%s\t<File>%s</File>\n' "$pad" "$(xml_escape "$(win_path "$f")")"
+            printf '%s\t<ActiveX>false</ActiveX>\n' "$pad"
+            printf '%s\t<ActiveXInstall>false</ActiveXInstall>\n' "$pad"
+            printf '%s\t<Action>0</Action>\n' "$pad"
+            printf '%s\t<OverwriteDateTime>false</OverwriteDateTime>\n' "$pad"
+            printf '%s\t<OverwriteAttributes>false</OverwriteAttributes>\n' "$pad"
+            printf '%s\t<PassCommandLine>false</PassCommandLine>\n' "$pad"
+            printf '%s</File>\n' "$pad"
+        } >> "$EVB_FILE"
+    done < <(find "$dir" -maxdepth 1 -type f | sort)
+
+    # 再递归输出本层的子目录
+    while IFS= read -r d; do
+        [ -z "$d" ] && continue
+        name="$(basename "$d")"
+        {
+            printf '%s<File>\n' "$pad"
+            printf '%s\t<Type>3</Type>\n' "$pad"
+            printf '%s\t<Name>%s</Name>\n' "$pad" "$(xml_escape "$name")"
+            printf '%s\t<Action>0</Action>\n' "$pad"
+            printf '%s\t<OverwriteDateTime>false</OverwriteDateTime>\n' "$pad"
+            printf '%s\t<OverwriteAttributes>false</OverwriteAttributes>\n' "$pad"
+            printf '%s\t<Files>\n' "$pad"
+        } >> "$EVB_FILE"
+        evb_emit_dir "$d" "$prefix$name/" "$pad\t\t"
+        printf '%s\t</Files>\n%s</File>\n' "$pad" "$pad" >> "$EVB_FILE"
+    done < <(find "$dir" -maxdepth 1 -mindepth 1 -type d | sort)
+}
+
+do_single_exe() {
+    step "打包成单文件 exe"
+
+    local dist="$PROJECT_DIR/dist"
+    local exe="$dist/AutoClickerQt.exe"
+    if [ ! -f "$exe" ]; then
+        err "dist/AutoClickerQt.exe 不存在，先跑一次不带 --single-exe 的打包"
+        return 1
+    fi
+
+    local evb_dir
+    if ! evb_dir="$(find_enigmavb)"; then
+        err "找不到 Enigma Virtual Box（enigmavbconsole.exe）"
+        echo "    下载: https://enigmaprotector.com/en/downloads.html" >&2
+        echo "    或用环境变量 ENIGMAVB_DIR 指向安装目录。" >&2
+        echo "    不想装它也行 —— 不加 --single-exe 就是默认的绿色目录模式。" >&2
+        return 1
+    fi
+    info "Enigma Virtual Box: $evb_dir"
+
+    local tmp
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/autoclickerqt_evb.XXXXXX")"
+    EVB_FILE="$tmp/project.evb"
+    local out_exe="$(win_path "$tmp")/boxed.exe"
+
+    # 待嵌入的文件：dist 里除主 exe 与源归档之外的全部内容
+    local file_count
+    file_count=$(find "$dist" -type f ! -name "AutoClickerQt.exe" ! -name "*.zip" ! -name "*.tar.gz" | wc -l | tr -d ' ')
+    info "待嵌入 $file_count 个文件"
+
+    {
+        printf '<?xml version="utf-16"?>\n'
+        printf '<>\n'
+        printf '\t<InputFile>%s</InputFile>\n' "$(xml_escape "$(win_path "$exe")")"
+        printf '\t<OutputFile>%s</OutputFile>\n' "$(xml_escape "$out_exe")"
+        printf '\t<Files>\n'
+        printf '\t\t<Enabled>true</Enabled>\n'
+        printf '\t\t<DeleteExtractedOnExit>true</DeleteExtractedOnExit>\n'
+        printf '\t\t<CompressFiles>true</CompressFiles>\n'
+        printf '\t\t<Files>\n'
+        printf '\t\t\t<File>\n'
+        printf '\t\t\t\t<Type>3</Type>\n'
+        printf '\t\t\t\t<Name>%%DEFAULT FOLDER%%</Name>\n'
+        printf '\t\t\t\t<Action>0</Action>\n'
+        printf '\t\t\t\t<OverwriteDateTime>false</OverwriteDateTime>\n'
+        printf '\t\t\t\t<OverwriteAttributes>false</OverwriteAttributes>\n'
+        printf '\t\t\t\t<Files>\n'
+    } > "$EVB_FILE"
+
+    evb_emit_dir "$dist" "" "\t\t\t\t\t"
+
+    {
+        printf '\t\t\t\t</Files>\n'
+        printf '\t\t\t</File>\n'
+        printf '\t\t</Files>\n'
+        printf '\t</Files>\n'
+        printf '\t<Registries><Enabled>false</Enabled><Registries/></Registries>\n'
+        printf '\t<Packaging><Enabled>false</Enabled></Packaging>\n'
+        printf '\t<Options>\n'
+        printf '\t\t<ShareVirtualSystem>true</ShareVirtualSystem>\n'
+        printf '\t\t<MapExecutableWithTemporaryFile>true</MapExecutableWithTemporaryFile>\n'
+        printf '\t\t<AllowRunningOfVirtualExeFiles>true</AllowRunningOfVirtualExeFiles>\n'
+        printf '\t</Options>\n'
+        printf '</>\n'
+    } >> "$EVB_FILE"
+
+    # 必须转成 UTF-16 LE + BOM，否则 enigmavbconsole 会把文件当坏项目
+    if command -v iconv >/dev/null 2>&1; then
+        iconv -f UTF-8 -t UTF-16 "$EVB_FILE" > "$EVB_FILE.u16" && mv "$EVB_FILE.u16" "$EVB_FILE"
+    else
+        warn "没有 iconv，.evb 可能不是 UTF-16，Enigma VB 会忽略文件列表"
+    fi
+
+    local log="$tmp/evb.log"
+    if ! "$evb_dir/enigmavbconsole.exe" "$(win_path "$EVB_FILE")" > "$log" 2>&1; then
+        err "Enigma VB 打包失败"
+        tail -n 20 "$log" >&2
+        rm -rf "$tmp"
+        return 1
+    fi
+    if [ ! -f "$tmp/boxed.exe" ]; then
+        err "Enigma VB 没有产出文件"
+        tail -n 20 "$log" >&2
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    # 清理 dist 为单文件形态（config/ 与 log/ 保留，那是运行期数据）
+    find "$dist" -mindepth 1 -maxdepth 1 \
+        ! -name "AutoClickerQt.exe" ! -name "config" ! -name "log" \
+        -exec rm -rf {} + 2>/dev/null || true
+    cp "$tmp/boxed.exe" "$exe"
+    touch "$exe"
+    local size
+    size=$(du -m "$exe" | cut -f1)
+    ok "单文件 exe 生成成功（${size} MB）"
+    info "dist/ 已清理为单文件形态（只剩 AutoClickerQt.exe）"
+
+    rm -rf "$tmp"
+    return 0
 }
 
 # ================================================================ 主流程
@@ -398,6 +674,15 @@ else
     step "跳过收集依赖（--no-exe）"
 fi
 
+if [ "$SINGLE_EXE" -eq 1 ]; then
+    if [ "$PLATFORM" = "windows" ]; then
+        do_single_exe || exit 1
+    else
+        step "跳过单文件打包"
+        warn "单文件 exe 依赖 Enigma Virtual Box（仅 Windows），当前平台: $PLATFORM"
+    fi
+fi
+
 if [ "$WITH_SOURCE" -eq 1 ] && [ "$DO_ZIP" -eq 1 ]; then
     pack_source || exit 1
 else
@@ -410,6 +695,10 @@ printf '%s打包完成。%s\n' "$C_OK" "$C_OFF"
 info "dist: $PROJECT_DIR/dist"
 if [ -f "$PROJECT_DIR/dist/AutoClickerQt.exe" ]; then
     size="$(awk -v b="$(stat -c %s "$PROJECT_DIR/dist/AutoClickerQt.exe" 2>/dev/null || echo 0)" 'BEGIN { printf "%.1f MB", b/1048576 }')"
-    ok "可执行文件: dist/AutoClickerQt.exe  ($size)"
+    if [ "$SINGLE_EXE" -eq 1 ]; then
+        ok "单文件 exe: dist/AutoClickerQt.exe  ($size)"
+    else
+        ok "可执行文件: dist/AutoClickerQt.exe  ($size)"
+    fi
 fi
 exit 0

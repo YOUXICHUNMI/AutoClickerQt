@@ -7,6 +7,7 @@ rem     script\package.cmd
 rem     script\package.cmd -Version 1.2.0
 rem     script\package.cmd -CheckOnly
 rem     script\package.cmd -SkipBuild -SkipZip
+rem     script\package.cmd -SingleExe    (打包成单个 exe)
 rem
 rem 注意：文件存为 GBK + CRLF。cmd 按当前代码页逐字节读批处理，
 rem 中途改 chcp 会让后半段中文按旧码页解释而乱码，所以这里不切码页。

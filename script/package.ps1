@@ -19,6 +19,23 @@
 .PARAMETER SkipBuild
     跳过编译，只用现有产物打包（产物已在 dist 时有用）。
 
+.PARAMETER SingleExe
+    打包成一个单文件 exe（用 Enigma Virtual Box 把所有 Qt DLL 与插件嵌进去）。
+    不加这个开关时，产出的是"绿色目录"——一个文件夹，里面是可执行文件加一堆 DLL。
+
+    两种形态二选一：
+      绿色目录（默认）：dist\ 里是 AutoClickerQt.exe + Qt6*.dll + platforms\ 等，
+                        启动快、可换 DLL 调试，但要整个文件夹一起拷。
+      单文件 exe       ：dist\ 里只有 AutoClickerQt.exe 一个文件（约 17 MB），
+                        随便拷到哪都能双击运行，DLL 在运行时由内存虚拟化提供、
+                        不会落盘。
+
+.PARAMETER EnigmaVBDir
+    Enigma Virtual Box 的安装目录（只有 -SingleExe 时才用）。
+    不传则依次尝试：环境变量 ENIGMAVB_DIR → E:\Tools\EnigmaVB →
+    C:\Program Files\Enigma Virtual Box → C:\Program Files (x86)\Enigma Virtual Box →
+    %LOCALAPPDATA%\Enigma Virtual Box → PATH 里的 enigmavbconsole.exe。
+
 .PARAMETER SkipZip
     只产出 dist 目录，不压缩。
 
@@ -35,6 +52,13 @@
 .EXAMPLE
     .\script\package.ps1
 
+    默认产出绿色目录（exe + DLL 文件夹）。
+
+.EXAMPLE
+    .\script\package.ps1 -SingleExe
+
+    产出一个单文件 exe，拷到任何地方双击就能跑。
+
 .EXAMPLE
     .\script\package.ps1 -Version 1.2.0 -QtDir C:\Qt\6.8.0\msvc2019_64
 
@@ -47,6 +71,8 @@ param(
     [string]$Version = "1.0.0",
     [string]$QtDir = "",
     [string]$BuildDir = "",
+    [switch]$SingleExe,
+    [string]$EnigmaVBDir = "",
     [switch]$SkipBuild,
     [switch]$SkipZip,
     [switch]$CheckOnly,
@@ -132,6 +158,50 @@ function Find-QtDir {
 找不到 Qt6 安装。请用 -QtDir 指定，或设置环境变量：
     `$env:CMAKE_PREFIX_PATH = "C:\Qt\6.8.0\msvc2019_64"
 下载地址：https://www.qt.io/download-qt-installer
+"@
+}
+
+# ------------------------------------------------ 查找 Enigma Virtual Box 安装位置
+# 只有 -SingleExe 时才需要。判定标准是目录里有 enigmavbconsole.exe（命令行版）。
+function Find-EnigmaVBDir {
+    $probe = {
+        param([string]$Dir)
+        if (-not $Dir) { return $false }
+        return (Test-Path (Join-Path $Dir "enigmavbconsole.exe"))
+    }
+
+    if ($EnigmaVBDir) {
+        if (& $probe $EnigmaVBDir) { return (Resolve-Path $EnigmaVBDir).Path }
+        throw "指定的 EnigmaVBDir 里没有 enigmavbconsole.exe：$EnigmaVBDir"
+    }
+
+    $candidates = @()
+    if ($env:ENIGMAVB_DIR) { $candidates += $env:ENIGMAVB_DIR }
+    $candidates += @(
+        "E:\Tools\EnigmaVB",
+        "C:\Program Files\Enigma Virtual Box",
+        "C:\Program Files (x86)\Enigma Virtual Box",
+        (Join-Path $env:LOCALAPPDATA "Enigma Virtual Box"),
+        (Join-Path $env:ProgramFiles "Enigma Virtual Box")
+    )
+
+    foreach ($c in $candidates) {
+        if (& $probe $c) { return (Resolve-Path $c).Path }
+    }
+
+    # 最后看 PATH
+    $onPath = Get-Command enigmavbconsole.exe -ErrorAction SilentlyContinue
+    if ($onPath) { return (Split-Path -Parent $onPath.Source) }
+
+    throw @"
+找不到 Enigma Virtual Box。它是把多个 DLL 嵌进单个 exe 的打包工具（免费）。
+
+下载：https://enigmaprotector.com/en/downloads.html
+安装后它会落在 C:\Program Files\Enigma Virtual Box，
+      或者用 -EnigmaVBDir 指定安装目录，
+      或者设置环境变量 `$env:ENIGMAVB_DIR = "E:\Tools\EnigmaVB"。
+
+不想装它也行 —— 不加 -SingleExe 就是默认的绿色目录模式，不需要这个工具。
 "@
 }
 
@@ -446,8 +516,11 @@ function Invoke-Deploy {
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
+    # --no-system-dxc-compiler 会跳过 dxcompiler.dll(24 MB) + dxil.dll ——
+    # 它们是 Qt 给 Direct3D 的着色器编译器，本项目纯 Widgets 用不到。
+    # 实测删掉后界面与连点功能都正常，dist 从 65 MB 降到 39 MB。
         & $windeployqt --release --no-translations --no-system-d3d-compiler `
-                       --no-opengl-sw --compiler-runtime $target *> $logFile
+                       --no-system-dxc-compiler --no-opengl-sw --compiler-runtime $target *> $logFile
         $code = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $prevEap
@@ -504,12 +577,214 @@ function Invoke-Package {
     return $zipPath
 }
 
+# ------------------------------------------------------------ 单文件 exe 打包
+# Enigma Virtual Box 是文件虚拟化工具：把所有 DLL / 插件嵌进 exe，
+# 运行时由它注入的 loader 在内存里模拟文件系统，
+# 所以磁盘上不会出现这些文件，拷一个 exe 到任何地方双击就能跑。
+function ConvertTo-EvbXmlText {
+    param([string]$Text)
+    # XML 只有这三个字符必须转义，& 要先换，否则会把后面换出来的 &amp; 再换一次
+    return $Text.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
+}
+
+function New-EvbProjectFile {
+    param(
+        [string]$InputExe,
+        [string]$OutputExe,
+        [object[]]$EmbedFiles,
+        [string]$EvbPath,
+        [string]$BaseDir
+    )
+
+    # 把扁平的文件列表还原成目录树。
+    # 为什么要建树：EVB 里文件的 <Name> 写成 "platforms\qwindows.dll" 是无效的 ——
+    # 它不会自动创建中间目录，结果 qwindows.dll 被平铺在根目录，
+    # Qt 于是找不到平台插件、只弹一个 "no Qt platform plugin could be initialized" 的框。
+    # 正确做法是每一层目录都显式写一个 <Type>3</Type> 节点。
+    $root = Get-Item -LiteralPath $BaseDir
+    $tree = @{ Files = @(); Dirs = @{} }
+
+    foreach ($f in $EmbedFiles) {
+        $rel = $f.FullName.Substring($BaseDir.Length + 1)
+        $parts = $rel -split '\\'
+        $node = $tree
+        for ($i = 0; $i -lt $parts.Length - 1; $i++) {
+            $name = $parts[$i]
+            if (-not $node.Dirs.ContainsKey($name)) {
+                $node.Dirs[$name] = @{ Files = @(); Dirs = @{} }
+            }
+            $node = $node.Dirs[$name]
+        }
+        $node.Files += , @{ Name = $parts[-1]; Path = $f.FullName }
+    }
+
+    $indent = "`t"
+    $sb = New-Object System.Text.StringBuilder
+
+    # 递归写一个目录节点的内容（不含外层 <File> 标签）
+    $writeDirBody = $null
+    $writeFileNode = {
+        param($sb2, $item, $pad)
+        [void]$sb2.AppendLine("$pad<File>")
+        [void]$sb2.AppendLine("$pad`t<Type>2</Type>")   # 2 = 文件
+        [void]$sb2.AppendLine("$pad`t<Name>$(ConvertTo-EvbXmlText $item.Name)</Name>")
+        [void]$sb2.AppendLine("$pad`t<File>$(ConvertTo-EvbXmlText $item.Path)</File>")
+        [void]$sb2.AppendLine("$pad`t<ActiveX>false</ActiveX>")
+        [void]$sb2.AppendLine("$pad`t<ActiveXInstall>false</ActiveXInstall>")
+        [void]$sb2.AppendLine("$pad`t<Action>0</Action>")
+        [void]$sb2.AppendLine("$pad`t<OverwriteDateTime>false</OverwriteDateTime>")
+        [void]$sb2.AppendLine("$pad`t<OverwriteAttributes>false</OverwriteAttributes>")
+        [void]$sb2.AppendLine("$pad`t<PassCommandLine>false</PassCommandLine>")
+        [void]$sb2.AppendLine("$pad</File>")
+    }
+
+    $writeDirBody = {
+        param($sb2, $node, $pad)
+        foreach ($f in $node.Files) {
+            & $writeFileNode $sb2 $f $pad
+        }
+        foreach ($d in $node.Dirs.Keys) {
+            [void]$sb2.AppendLine("$pad<File>")
+            [void]$sb2.AppendLine("$pad`t<Type>3</Type>")   # 3 = 目录
+            [void]$sb2.AppendLine("$pad`t<Name>$(ConvertTo-EvbXmlText $d)</Name>")
+            [void]$sb2.AppendLine("$pad`t<Action>0</Action>")
+            [void]$sb2.AppendLine("$pad`t<OverwriteDateTime>false</OverwriteDateTime>")
+            [void]$sb2.AppendLine("$pad`t<OverwriteAttributes>false</OverwriteAttributes>")
+            [void]$sb2.AppendLine("$pad`t<Files>")
+            & $writeDirBody $sb2 $node.Dirs[$d] "$pad`t`t"
+            [void]$sb2.AppendLine("$pad`t</Files>")
+            [void]$sb2.AppendLine("$pad</File>")
+        }
+    }
+
+    # 注意：Enigma Virtual Box 的 .evb 是 UTF-16 的 XML，
+    # 且根节点名是空的（<> ... </>），不是常见的 <Project>。
+    # 用别的根节点名它不报错，但 Files 列表会被整体忽略 —— 所以这里不能改。
+    [void]$sb.AppendLine('<?xml version="utf-16"?>')
+    [void]$sb.AppendLine('<>')
+    [void]$sb.AppendLine("`t<InputFile>$(ConvertTo-EvbXmlText $InputExe)</InputFile>")
+    [void]$sb.AppendLine("`t<OutputFile>$(ConvertTo-EvbXmlText $OutputExe)</OutputFile>")
+    [void]$sb.AppendLine("`t<Files>")
+    [void]$sb.AppendLine("`t`t<Enabled>true</Enabled>")
+    [void]$sb.AppendLine("`t`t<DeleteExtractedOnExit>true</DeleteExtractedOnExit>")
+    [void]$sb.AppendLine("`t`t<CompressFiles>true</CompressFiles>")
+    [void]$sb.AppendLine("`t`t<Files>")
+    [void]$sb.AppendLine("`t`t`t<File>")
+    [void]$sb.AppendLine("`t`t`t`t<Type>3</Type>")   # 3 = 目录
+    [void]$sb.AppendLine("`t`t`t`t<Name>%DEFAULT FOLDER%</Name>")
+    [void]$sb.AppendLine("`t`t`t`t<Action>0</Action>")
+    [void]$sb.AppendLine("`t`t`t`t<OverwriteDateTime>false</OverwriteDateTime>")
+    [void]$sb.AppendLine("`t`t`t`t<OverwriteAttributes>false</OverwriteAttributes>")
+    [void]$sb.AppendLine("`t`t`t`t<Files>")
+
+    & $writeDirBody $sb $tree "`t`t`t`t`t"
+
+    [void]$sb.AppendLine("`t`t`t`t</Files>")
+    [void]$sb.AppendLine("`t`t`t</File>")
+    [void]$sb.AppendLine("`t`t</Files>")
+    [void]$sb.AppendLine("`t</Files>")
+    [void]$sb.AppendLine("`t<Registries><Enabled>false</Enabled><Registries/></Registries>")
+    [void]$sb.AppendLine("`t<Packaging><Enabled>false</Enabled></Packaging>")
+    [void]$sb.AppendLine("`t<Options>")
+    [void]$sb.AppendLine("`t`t<ShareVirtualSystem>true</ShareVirtualSystem>")
+    [void]$sb.AppendLine("`t`t<MapExecutableWithTemporaryFile>true</MapExecutableWithTemporaryFile>")
+    [void]$sb.AppendLine("`t`t<AllowRunningOfVirtualExeFiles>true</AllowRunningOfVirtualExeFiles>")
+    [void]$sb.AppendLine("`t</Options>")
+    [void]$sb.AppendLine('</>')
+
+    # 必须 UTF-16 LE + BOM，否则 enigmavbconsole 会把文件当坏项目
+    [System.IO.File]::WriteAllText($EvbPath, $sb.ToString(),
+        (New-Object System.Text.UnicodeEncoding($false, $true)))
+}
+
+function Invoke-SingleExe {
+    param([string]$EnigmaDir)
+
+    Write-Step "打包成单文件 exe"
+
+    $exePath = Join-Path $DistDir "AutoClickerQt.exe"
+    if (-not (Test-Path $exePath)) {
+        throw "dist\ 里没有 AutoClickerQt.exe，没法做单文件打包"
+    }
+
+    # 要嵌进去的是 dist 下除「主 exe / 压缩包 / 运行期数据」之外的全部内容
+    $embed = Get-ChildItem -LiteralPath $DistDir -Recurse -File | Where-Object {
+        $_.Name -ne 'AutoClickerQt.exe' -and
+        $_.Extension -ne '.zip' -and
+        $_.FullName -notmatch '\\(config|log)\\'
+    }
+
+    if (-not $embed) {
+        throw "dist\ 里除了主 exe 没有其他文件，windeployqt 是不是没跑？"
+    }
+
+    $embedMb = [math]::Round((($embed | Measure-Object Length -Sum).Sum) / 1MB, 2)
+    Write-Info "待嵌入 $($embed.Count) 个文件，共 $embedMb MB"
+
+    $evbDir = Join-Path $env:TEMP "autoclickerqt_evb_$(Get-Random)"
+    New-Item -ItemType Directory -Force -Path $evbDir | Out-Null
+
+    # 三个路径约束（踩过坑，别改）：
+    #   1. OutputFile 不能等于 InputFile —— EVB 会报 Cannot create file
+    #   2. 路径不能含非 ASCII 字符 —— 同样报 Cannot create file，且报错信息本身是乱码
+    #   3. 所以先输出到临时目录的 ASCII 文件名，成功后再搬回 dist 并改名
+    $tmpOut = Join-Path $evbDir "boxed.exe"
+    $evbPath = Join-Path $evbDir "build.evb"
+
+    try {
+        New-EvbProjectFile -InputExe $exePath -OutputExe $tmpOut `
+                           -EmbedFiles $embed -EvbPath $evbPath -BaseDir $DistDir
+
+        $console = Join-Path $EnigmaDir "enigmavbconsole.exe"
+        $logFile = Join-Path $evbDir "evb.log"
+
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $console $evbPath *> $logFile
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+
+        if ($code -ne 0 -or -not (Test-Path $tmpOut)) {
+            $tail = ""
+            if (Test-Path $logFile) {
+                $tail = (Get-Content $logFile -Tail 15) -join "`n"
+            }
+            throw "Enigma Virtual Box 打包失败（退出码 $code）`n$tail"
+        }
+
+        $boxedMb = [math]::Round((Get-Item $tmpOut).Length / 1MB, 2)
+        Write-Ok "单文件 exe 生成成功（$boxedMb MB）"
+
+        # 单文件模式下 dist 里只留这一个 exe，免得用户不知道该拷哪个
+        Get-ChildItem -LiteralPath $DistDir -Force | Where-Object {
+            $_.Name -ne 'AutoClickerQt.exe' -and
+            $_.Extension -ne '.zip' -and
+            $_.Name -notin @('config', 'log')
+        } | Remove-Item -Recurse -Force
+
+        Move-Item $tmpOut $exePath -Force
+        (Get-Item $exePath).LastWriteTime = Get-Date
+
+        Write-Ok "dist\ 已清理为单文件形态（只剩 AutoClickerQt.exe）"
+    } finally {
+        Remove-Item $evbDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # ================================================================ 主流程
 
 Write-Host ""
 Write-Host "AutoClickerQt 打包脚本" -ForegroundColor Cyan
 Write-Host "项目: $ProjectDir" -ForegroundColor Gray
 Write-Host "版本: $Version" -ForegroundColor Gray
+if ($SingleExe) {
+    Write-Host "形态: 单文件 exe（DLL 内嵌，拷一个文件就能跑）" -ForegroundColor Gray
+} else {
+    Write-Host "形态: 绿色目录（exe + DLL 文件夹，默认）" -ForegroundColor Gray
+}
 
 if (-not $BuildDir) { $BuildDir = $DefaultBuildDir }
 
@@ -536,6 +811,13 @@ try {
     $qt = Find-QtDir
     Write-Info "Qt: $qt"
 
+    # 单文件模式先确认工具在，免得白编译一场才失败
+    $evb = $null
+    if ($SingleExe) {
+        $evb = Find-EnigmaVBDir
+        Write-Info "Enigma Virtual Box: $evb"
+    }
+
     if (-not $SkipBuild) {
         Invoke-Build -Qt $qt -Dir $BuildDir
     } else {
@@ -543,6 +825,10 @@ try {
     }
 
     Invoke-Deploy -Qt $qt -Dir $BuildDir
+
+    if ($SingleExe) {
+        Invoke-SingleExe -EnigmaDir $evb
+    }
 
     $zip = $null
     if (-not $SkipZip) {
@@ -552,6 +838,13 @@ try {
     Write-Host ""
     Write-Host "打包完成。" -ForegroundColor Green
     Write-Host "  dist: $DistDir" -ForegroundColor Gray
+    if ($SingleExe) {
+        $exe = Join-Path $DistDir "AutoClickerQt.exe"
+        if (Test-Path $exe) {
+            $mb = [math]::Round((Get-Item $exe).Length / 1MB, 2)
+            Write-Host "  单文件 exe: $exe  ($mb MB)" -ForegroundColor Gray
+        }
+    }
     if ($zip) {
         Write-Host "  发布包: $zip" -ForegroundColor Gray
     }

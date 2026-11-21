@@ -279,6 +279,15 @@ CMake `E:\Qt\Tools\CMake_64\bin\cmake.exe`（3.30.5），Ninja `E:\Qt\Tools\Ninj
 这些最容易写错的部分，在没有 Qt 的环境里就已经跑通了。后来 Qt 装好，
 编译一次就过也印证了这点。
 
+### 单文件 exe 验证（Enigma Virtual Box）
+
+`-SingleExe` / `--single-exe` 打出来的 17 MB 单文件 exe，已在**干净目录
+（目录里只有它一个文件）**验证过：窗口标题正确、`config/` 与 `log/` 在 exe
+同级生成、日志正常、关闭后进程归零。两个脚本（ps1 / sh）产出的都是这个结果。
+
+验证方式必须是**干净目录**。放在有真实 Qt DLL 的 `dist/` 里跑，看不出虚拟化
+有没有生效 —— 它会用真 DLL 兜底，看起来一切正常。
+
 ## 7. 环境
 
 | 项目 | 值 |
@@ -455,6 +464,39 @@ cmd 是按当前代码页逐字节读批处理的，中途切码页会让后半�
 `qCInfo(lcX) << QStringLiteral("热键已注册")` 打印出来是
 `[hotkey] "热键已注册"` —— QDebug 默认给 QString 加引号。日志里看着很别扭。
 修法：`qCInfo(lcX).noquote() << QStringLiteral(...)`。
+
+### 9.11 单文件 exe：Enigma Virtual Box 的 .evb 有四个坑
+
+想产出「一个 exe 拷哪都能跑」，用的是 **Enigma Virtual Box**（EVB，免费）。
+它把文件嵌进 exe，运行时由 loader 在内存里虚拟化，**不往磁盘解压**。
+坑都在 `.evb` 项目文件里：
+
+1. **根节点名必须是空的** `< > ... < />`，不是 `<Project>`。写别的名字 EVB
+   **不报错**，但整个 `<Files>` 列表被静默忽略 —— 打出来的 exe 里一个文件都
+   没有，看着「成功」其实白干。
+2. **编码必须是 UTF-16 LE + BOM**。UTF-8 一样不报错、一样忽略。
+3. **子目录必须一层层写成独立的 `<Type>3</Type>` 节点**。文件的 `<Name>` 写成
+   `platforms\qwindows.dll` 是**无效**的 —— 它不会自动建中间目录，qwindows.dll
+   被平铺到根目录，Qt 于是找不到平台插件，只弹一个
+   「This application failed to start because no Qt platform plugin could be
+   initialized.」。**这个最有欺骗性**：进程不会退出（错误框挂着），
+   如果只检查「进程是否存活 + 有窗口」，会误判成成功。必须截图或看窗口标题。
+4. **`OutputFile` 不能等于 `InputFile`**，会报 `Cannot create file`；而且
+   **路径不能含非 ASCII 字符**，`单文件版.exe` 报同样的错，错误信息本身还是乱码。
+
+另外：**不能把主程序自己再嵌一遍**。`dist/` 里除了 `AutoClickerQt.exe`
+什么都不排除的话，等于把入口 exe 当成虚拟文件又嵌一次，运行直接访问违例
+（0xC0000005）。`package.sh` 的 `evb_emit_dir` 里按文件名显式排除它。
+
+调试办法：把打出来的 exe 拷到一个**干净目录**（只有它一个文件）再跑。
+在有 DLL 兜底的 `dist/` 里跑，永远看不出问题 —— 它用的是真 DLL，虚拟化有没有
+生效根本分辨不出来。
+
+EVB CLI：
+```
+enigmavbconsole.exe project.evb                              # 正常
+enigmavbconsole.exe project.evb -input a.exe -output b.exe   # 覆盖输入输出
+```
 
 ---
 
