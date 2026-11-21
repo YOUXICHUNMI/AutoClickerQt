@@ -1,0 +1,33 @@
+// 可执行文件图标（资源管理器里看到的那个）
+// IDI_ICON1 是习惯命名，数字 1 才是 Windows 认定的主图标序号
+IDI_ICON1 ICON "@APP_ICON_PATH@"
+
+// 版本信息：属性 → 详细信息 里看到的内容
+1 VERSIONINFO
+FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          0x40004L
+FILETYPE        0x1L
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName",      "YOUXICHUNMI"
+            VALUE "FileDescription",  "AutoClicker - 自动连点器"
+            VALUE "FileVersion",      "@PROJECT_VERSION@"
+            VALUE "InternalName",     "AutoClicker"
+            VALUE "LegalCopyright",   "MIT License"
+            VALUE "OriginalFilename", "AutoClicker.exe"
+            VALUE "ProductName",      "AutoClicker"
+            VALUE "ProductVersion",   "@PROJECT_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

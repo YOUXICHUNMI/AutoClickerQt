@@ -177,6 +177,29 @@ dist/
 > `E:\Qt\Tools\CMake_64\bin\cmake.exe`，并在没设 `CMAKE_PREFIX_PATH` 时自动探测
 > `E:\Qt\6.*\mingw_64`。
 
+### exe 的图标与版本信息
+
+两种形态的 exe 都带 **Ralsei 图标**和完整的版本信息，右键「属性 → 详细信息」能看到：
+
+| 字段 | 值 |
+|------|-----|
+| 文件说明 | `AutoClicker - 自动连点器` |
+| 产品名称 | `AutoClicker` |
+| 文件版本 / 产品版本 | 跟 `-Version` 参数一致（默认 `1.0.0`） |
+| 公司名称 | `YOUXICHUNMI` |
+| 版权 | `MIT License` |
+
+图标来自 `resources/static/Ralsei.ico`（七种尺寸），由 `resources/app.rc.in` 经 CMake
+`configure_file` 生成的 `app.rc` 编进 PE 资源段。**`.qrc` 管不到文件图标** —— 它只
+影响程序自己画的窗口/托盘图标，资源管理器里那个图标必须走 `.rc`。
+
+单文件 exe 经 Enigma Virtual Box 打包后图标与版本信息原样保留（EVB 只往原 exe 后面
+挂数据段，不动 PE 头部）。
+
+> 自己改图标时注意三点：`.rc` 里的路径要用正斜杠（反斜杠会被 windres 当转义）；
+> `.rc` 里的中文要配 `-c 65001`（否则按 GBK 读成乱码）；图标资源序号要小（第一条
+> 才是主图标）。详见 `MEMORY.md` 的 9.13 节。
+
 ### 打包前自检
 
 每个脚本启动时都会先看 `dist/` 里有没有今天的产物、是不是比源码新。

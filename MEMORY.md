@@ -545,6 +545,66 @@ $env:TEMP = "$env:LOCALAPPDATA\Temp"
 
 ---
 
+### 9.13 exe 图标：.qrc 管不到文件图标，必须用 .rc
+
+现象：C++ 版编出的 AutoClicker.exe 在资源管理器里是 **Qt 的默认蓝色方块图标**，
+而 Python 版（PyInstaller --icon）早就是 Ralsei 了。
+
+根因：
+esources/resources.qrc 只把图片编进 Qt 资源系统，供
+QIcon(":/static/Ralsei.png") 在**程序自己画的窗口/托盘**里用。exe 文件本身在
+资源管理器里显示的那个图标，存在 PE 的图标资源段里，只能由 Windows 资源脚本
+.rc 编进去 —— 两者完全独立，改 .qrc 永远不会影响文件图标。
+
+解法：
+esources/app.rc.in + CMake configure_file 生成 pp.rc：
+
+`cmake
+if (WIN32)
+    set(APP_ICON_PATH "/resources/static/Ralsei.ico")
+    file(TO_CMAKE_PATH "" APP_ICON_PATH_FWD)   # .rc 里反斜杠会被当转义
+    set(APP_ICON_PATH "")
+    configure_file(resources/app.rc.in "/app.rc" @ONLY)
+    set_source_files_properties("/app.rc"
+            PROPERTIES COMPILE_FLAGS "-c 65001")               # 关键，见下
+    list(APPEND PROJECT_SOURCES "/app.rc")
+endif ()
+`
+
+.rc 里两段内容：
+
+`
+IDI_ICON1 ICON "@APP_ICON_PATH@"
+1 VERSIONINFO ... VALUE "FileDescription", "AutoClicker - 自动连点器" ...
+`
+
+三个坑：
+
+1. **.rc 里的中文会变乱码**。
+c/windres 默认按系统 ANSI 码页（中文机器是 936）
+   读源文件，而我们的 .rc 是 UTF-8。症状是属性页显示
+   AutoClicker - 鑷姩杩炵偣鍣?。修法是给这个源文件单独加编译参数：
+   MSVC 是 /c 65001，MinGW 是 -c 65001（用 set_source_files_properties 只作用于 .rc，
+   不污染 C++ 文件）。
+2. **ile(TO_CMAKE_PATH) 不能省**。CMake 变量里是 D:\... 反斜杠，写进 .rc 后
+   \D、\r 之类会被 windres 当转义序列吃掉，报一堆莫名其妙的语法错误。
+3. **图标的第一个 ID 要是小的数字**。IDI_ICON1 是习惯名，但 Windows 认的是资源序号；
+   把它放第一条（编译后就是 1）才能成为主图标。
+
+验证方法（不用打开资源管理器）：
+
+`powershell
+Add-Type -AssemblyName System.Drawing
+[System.Drawing.Icon]::ExtractAssociatedIcon("dist\AutoClicker.exe").ToBitmap().Save("icon.png")
+(Get-Item "dist\AutoClicker.exe").VersionInfo | Format-List FileDescription,ProductName,FileVersion
+`
+
+**单文件 exe（EVB）也会保留图标** —— Enigma Virtual Box 只往原 exe 后面挂数据段，
+不动 PE 头部，所以图标与版本信息原样带过去。实测 17.23 MB 的单文件 exe 图标、
+版本页都正常。
+
+---
+
 ## 用 GitHub Actions 自动打包
 
 `.github/workflows/build.yml` 定义了三个 job：

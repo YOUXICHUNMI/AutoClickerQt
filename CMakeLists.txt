@@ -53,6 +53,36 @@ set(PROJECT_RESOURCES
         resources/resources.qrc
 )
 
+# ------------------------------------------------------- exe 图标与版本信息
+# 没有 .rc 的话，Windows 会给 exe 套上编译器/Qt 的默认图标（一个蓝色方块），
+# 资源管理器里看着像没做完。.qrc 只影响程序自己画的窗口图标，
+# 影响不到 exe 文件本身的图标 —— 那个必须由资源脚本嵌进 PE。
+if (WIN32)
+    set(APP_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/static/Ralsei.ico")
+    if (NOT EXISTS "${APP_ICON_PATH}")
+        message(WARNING "找不到图标文件: ${APP_ICON_PATH}")
+    endif ()
+
+    # .rc 里写不进 Windows 反斜杠路径（会被当转义），统一用正斜杠
+    file(TO_CMAKE_PATH "${APP_ICON_PATH}" APP_ICON_PATH_FWD)
+    set(APP_ICON_PATH "${APP_ICON_PATH_FWD}")
+
+    configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/app.rc.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
+            @ONLY
+    )
+    set(APP_RC_FILE "${CMAKE_CURRENT_BINARY_DIR}/app.rc")
+    # .rc 是 UTF-8，但 rc/windres 默认按系统 ANSI 码页（中文机器上是 936）读，
+    # 不显式指定就会把「自动连点器」编译成乱码。两个编译器参数写法不同。
+    if (MSVC)
+        set_source_files_properties("${APP_RC_FILE}" PROPERTIES COMPILE_FLAGS "/c 65001")
+    else ()
+        set_source_files_properties("${APP_RC_FILE}" PROPERTIES COMPILE_FLAGS "-c 65001")
+    endif ()
+    list(APPEND PROJECT_SOURCES "${APP_RC_FILE}")
+endif ()
+
 qt_add_executable(AutoClicker
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
