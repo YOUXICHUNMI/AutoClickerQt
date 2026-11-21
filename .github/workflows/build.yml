@@ -1,0 +1,171 @@
+name: Build
+
+# 触发方式：
+#   - 推送到 main
+#   - 打 v* 标签（会额外发 Release）
+#   - 手动触发
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # 打 tag 时需要创建 Release
+
+jobs:
+  # ==========================================================
+  #  Windows：单文件 exe（Enigma Virtual Box）+ 绿色目录 zip
+  # ==========================================================
+  windows:
+    name: Windows (single exe + green dir)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.2'
+          host: windows
+          target: desktop
+          arch: win64_mingw
+          cache: true
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      # Enigma Virtual Box 用于打单文件 exe；装不上就只出绿色目录形态
+      - name: Install Enigma Virtual Box
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $url = 'https://enigmaprotector.com/assets/files/enigmavb.exe'
+          $out = Join-Path $env:RUNNER_TEMP 'enigmavb.exe'
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          Start-Process -FilePath $out -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/DIR=C:\EnigmaVB' -Wait
+          if (Test-Path 'C:\EnigmaVB\enigmavbconsole.exe') { Write-Host 'EnigmaVB ready' }
+          else { Write-Warning 'EnigmaVB 未装上，单文件 exe 会被跳过' }
+
+      # 走项目自己的打包脚本，保证 CI 与本地产出一致
+      - name: Package
+        shell: pwsh
+        run: |
+          $env:ENIGMAVB_DIR = 'C:\EnigmaVB'
+          $args = @('-Force','-SkipReadme')
+          if (-not (Test-Path 'C:\EnigmaVB\enigmavbconsole.exe')) { $args += '-SkipSingle' }
+          ./script/package.ps1 @args
+
+      - name: Show dist
+        shell: pwsh
+        run: Get-ChildItem dist -File | Format-Table Name, Length
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoClicker-windows
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  # ==========================================================
+  #  Linux：CMake + Qt6 编译，产单文件 + 绿色目录 tar.gz
+  #  （连点/热键等 Win32 功能由 Q_OS_WIN 守卫关闭，界面可读可用）
+  # ==========================================================
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build \
+            qt6-base-dev libgl1-mesa-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/release --parallel
+
+      - name: Verify binary
+        run: |
+          test -x build/release/AutoClicker
+          file build/release/AutoClicker
+
+      - name: Package archives
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          [[ "$VER" =~ ^[0-9] ]] || VER="0.0.0"
+          STAMP="$(date +%Y%m%d)"
+          mkdir -p dist
+
+          # 单文件：Linux 上就是那个可执行文件本身（Qt 依赖由系统提供）
+          cp build/release/AutoClicker "dist/AutoClicker_v${VER}_${STAMP}_single_linux64"
+
+          # 绿色目录：exe + 所有运行时依赖，解压即用
+          GREEN="build/green/AutoClicker"
+          mkdir -p "$GREEN"
+          cp build/release/AutoClicker "$GREEN/"
+          # 把需要的 Qt 与编译器运行时库一起带上（ldd 过滤系统自带的 glibc 等）
+          ldd build/release/AutoClicker \
+            | awk '{ if ($2 == "=>") print $3; else if ($1 ~ /^\//) print $1 }' \
+            | while read -r so; do
+                [ -f "$so" ] || continue
+                case "$so" in
+                  /lib/x86_64-linux-gnu/libc.so*|/lib/x86_64-linux-gnu/libm.so*|\
+                  /lib/x86_64-linux-gnu/libpthread.so*|/lib64/ld-linux*) continue ;;
+                esac
+                cp -n "$so" "$GREEN/" || true
+              done
+          tar -czf "dist/AutoClicker_v${VER}_${STAMP}_linux64.tar.gz" -C build/green AutoClicker
+
+          ls -lh dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoClicker-linux
+          path: |
+            dist/AutoClicker_v*_single_linux64
+            dist/AutoClicker_v*_linux64.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # ==========================================================
+  #  打 tag 时把两侧产物发到 Release
+  # ==========================================================
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ windows, linux ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten
+        run: |
+          mkdir -p out
+          find artifacts -type f -exec cp -n {} out/ \;
+          ls -lh out
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true

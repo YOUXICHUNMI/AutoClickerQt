@@ -1,5 +1,5 @@
 @echo off
-rem AutoClickerQt 打包脚本（Windows 批处理包装）
+rem AutoClicker 打包脚本（Windows 批处理包装）
 rem
 rem 本脚本只是薄包装：找一个可用的 PowerShell，把参数原样转给 package.ps1。
 rem 用法与 package.ps1 完全一致，例如：

@@ -1,4 +1,4 @@
-# AutoClickerQt
+# AutoClicker
 
 Windows 自动连点器 —— **C++17 / Qt6** 版本。
 
@@ -70,7 +70,7 @@ cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release
 
 # 4. 运行
-.\build\release\AutoClickerQt.exe
+.\build\release\AutoClicker.exe
 ```
 
 用 CLion：直接打开项目目录，在 *Settings → CMake* 里把
@@ -101,12 +101,23 @@ cmake --build --preset release
 三个脚本做同一件事，按你的 shell 环境挑一个。**它们的判定结论必须一致**——
 同一份 `dist/` 分别跑一遍，退出码和结论行都要相同。
 
-打包有**两种产物形态**，默认是绿色目录，加一个开关就变成单文件 exe：
+### 两种产物形态，默认都产
 
-| 形态 | 开关 | 产出 | 适合 |
-| --- | --- | --- | --- |
-| 绿色目录（默认） | 不加 | `dist\AutoClickerQt.exe` + 21 个 Qt DLL + `*_win64.zip`（约 39 MB） | 自己用，启动最快 |
-| 单文件 exe | `-SingleExe` / `--single-exe` | `dist\AutoClickerQt.exe` 一个文件（约 17 MB） | 拷给别人，DLL 已内嵌 |
+一次跑完会同时产出下面三份，不需要额外开关：
+
+| 产物 | 说明 | 大小 |
+| --- | --- | --- |
+| `dist\AutoClicker.exe` | 单文件 exe（DLL 已内嵌，拷一个文件就能跑） | 约 17 MB |
+| `dist\AutoClicker_v<版本>_<日期>_single_win64.exe` | 上面那份的带版本号副本，便于归档分发 | 约 17 MB |
+| `dist\AutoClicker_v<版本>_<日期>_win64.zip` | 绿色目录包（exe + 21 个 Qt DLL），解压即用、启动更快、便于排障 | 约 16 MB |
+
+只想产其中一种时：
+
+| 想要 | 开关 |
+| --- | --- |
+| 只产单文件 exe | `-SkipGreen` / `--skip-green` |
+| 只产绿色目录 zip | `-SkipSingle` / `--skip-single` |
+| 两种都不产（只编译验证） | 传 `-SkipSingle -SkipGreen` |
 
 > 单文件模式用 [Enigma Virtual Box](https://enigmaprotector.com/en/downloads.html) 做
 > 文件虚拟化：DLL 不落盘，运行时由 loader 在内存里模拟，所以真的是「一个 exe 拷哪
@@ -114,36 +125,36 @@ cmake --build --preset release
 > `C:\Program Files\Enigma Virtual Box` 和 `ENIGMAVB_DIR` 环境变量里找；
 > 找不到就报错并提示下载地址，不会静默降级。
 >
-> 装了之后 `dist/` 会被清理成只剩那一个 exe（`config/` 和 `log/` 保留，那是运行期
-> 数据）。想换回绿色目录，去掉开关重跑一遍即可。
+> 单文件里的 `config/` 和 `log/` 仍然落在 exe 同级（那是运行期数据，不在虚拟文件
+> 系统里），所以配置和日志不会因为换机器而丢。
 
 | 脚本 | 运行环境 | 产出 |
 | --- | --- | --- |
-| `script\package.ps1` | Windows PowerShell 5.1 / 7+ | `dist\AutoClickerQt.exe` + Qt 依赖 + `*_win64.zip` |
+| `script\package.ps1` | Windows PowerShell 5.1 / 7+ | 上面三份全产 |
 | `script\package.cmd` | Windows cmd（薄包装，内部转调 ps1） | 同上 |
 | `script/package.sh` | MSYS2 / Git Bash（Windows）| 同上；Linux / macOS 上只能出 `*_src.tar.gz` |
 
 ```powershell
 # --- Windows ---
-.\script\package.ps1                 # 编译 + windeployqt + 压缩（绿色目录）
-.\script\package.ps1 -SingleExe      # 打成单个 exe（需 Enigma Virtual Box）
-.\script\package.ps1 -SingleExe -SkipZip          # 单文件，且不再压缩发布包
+.\script\package.ps1                              # 默认：单文件 + 绿色目录 + 压缩包，一次全出
+.\script\package.ps1 -SkipGreen                   # 只产单文件 exe
+.\script\package.ps1 -SkipSingle                  # 只产绿色目录 zip
+.\script\package.ps1 -SkipZip                     # 产两种形态但不压 zip
 .\script\package.ps1 -EnigmaVBDir "D:\Tools\EVB"  # 手动指定 EVB 安装目录
-.\script\package.ps1 -SkipZip        # 只编译并铺好 dist，不压缩
-.\script\package.ps1 -Version 1.2.0  # 指定版本号
-.\script\package.ps1 -CheckOnly      # 只检测（exit 0=最新 / 2=过期）
-.\script\package.ps1 -Force          # 产物最新也强制重打
+.\script\package.ps1 -Version 1.2.0               # 指定版本号
+.\script\package.ps1 -CheckOnly                   # 只检测（exit 0=最新 / 2=过期）
+.\script\package.ps1 -Force                       # 产物最新也强制重打
 
 # 用 cmd 也一样，参数原样透传
-script\package.cmd -SingleExe
+script\package.cmd -SkipGreen
 script\package.cmd -CheckOnly
 ```
 
 ```bash
 # --- MSYS2 / Git Bash（Windows，能出 exe）---
-./script/package.sh                  # 编译 + 收集依赖，产出 dist/AutoClickerQt.exe
-./script/package.sh --single-exe     # 打成单个 exe（需 Enigma Virtual Box）
-./script/package.sh --no-exe         # 只编译，不收集依赖
+./script/package.sh                  # 默认：单文件 + 绿色目录 + 压缩包
+./script/package.sh --skip-green     # 只产单文件 exe
+./script/package.sh --skip-single    # 只产绿色目录 zip
 ./script/package.sh --with-source    # 额外打一份源码归档
 ./script/package.sh --check-only
 
@@ -151,24 +162,13 @@ script\package.cmd -CheckOnly
 ./script/package.sh                  # 只打源码归档
 ```
 
-绿色目录形态的产物在 `dist/`：
+`dist/` 打完之后是这样（`build\green` 是中途暂存区，用完自动删）：
 
 ```
 dist/
-├── AutoClickerQt.exe            可执行文件
-├── Qt6Core.dll 等运行时 DLL      由 windeployqt 拷贝
-├── platforms/qwindows.dll
-├── imageformats/                 GIF 播放需要 qgif.dll
-├── AutoClickerQt_v1.0.0_<日期>_win64.zip   完整绿色包
-└── AutoClickerQt_v1.0.0_<日期>_src.tar.gz  源码包（--with-source 才有）
-```
-
-单文件形态只有两样：
-
-```
-dist/
-├── AutoClickerQt.exe            单文件，17 MB，DLL 已内嵌
-└── AutoClickerQt_v1.0.0_<日期>_win64.zip   发布包
+├── AutoClicker.exe                             单文件，17 MB，DLL 已内嵌
+├── AutoClicker_v1.0.0_<日期>_single_win64.exe  带版本号的单文件副本
+└── AutoClicker_v1.0.0_<日期>_win64.zip         绿色目录包（exe + 21 个 Qt DLL）
 ```
 
 > **`script/package.ps1` 和 `package.sh` 都会自动避开 Cygwin / MSYS 版的 cmake**。
@@ -180,7 +180,7 @@ dist/
 ### 打包前自检
 
 每个脚本启动时都会先看 `dist/` 里有没有今天的产物、是不是比源码新。
-四个容易做错的地方都已处理：
+五个容易做错的地方都已处理：
 
 1. **历史归档不算过期**。产物文件名带日期戳，换个日期重打一次，旧文件会一直
    显示「过期」。现在名字里日期戳不是今天的，标 `[归档]` 直接跳过判定。
@@ -188,9 +188,10 @@ dist/
    `--with-source` 才产出，默认标 `[跳过]`，否则自检每次都说「该重打了」，
    然后你就再也不看它了。
 3. **今天一个产物都没有也算需要打包**，哪怕 `dist/` 里躺着一堆历史包。
-4. **单文件模式与绿色目录模式互相认为对方是「最新」**。两种形态产出的都是
-   `dist/AutoClickerQt.exe`，所以从一种切到另一种时，脚本会照常判「已是最新」
-   并跳过 —— 这是有意的：**切换形态要带 `-Force`**，否则它不会重新部署。
+4. **形态齐全检查**。默认产两种形态，所以今天缺 `*_win64.zip` 或缺
+   `*_single_win64.exe` 都会判「需要打包」。
+5. **切换形态需要 `-Force`**。`-SkipGreen` / `-SkipSingle` 会让某一份今天不再
+   产出；如果你刚从一个形态切到另一个，shell 里跑时带上 `-Force` 更省事。
 
 > 之前还按「谁产出的」跳过 `exe` / `_win64.zip`，后来取消了这个规则：`ps1` 和
 > Windows 下的 `sh` 产出的是同一份东西，谁跑都能重建，没必要区分来源。
@@ -200,6 +201,35 @@ dist/
 
 三个脚本的实现各写各的（PowerShell / bash），所以改判定规则时**三个都要改，
 并且跑一遍对比退出码**。这是我在上一版项目里真踩过的坑。
+
+---
+
+## 用 GitHub Actions 自动打包
+
+仓库里带了一份 `.github/workflows/build.yml`，推到 GitHub 就会自动编译并打包出
+**Windows 和 Linux** 两套产物，不用在自己机器上装 Qt。
+
+| 事件 | 行为 |
+| --- | --- |
+| push 到 `main` | 编译 + 打包，产物作为 workflow artifact 保留 30 天 |
+| `pull_request` | 同上（只构建，不发版） |
+| push 形如 `v1.2.0` 的 tag | 额外自动建 GitHub Release，把两平台产物挂上去 |
+| 手动 `workflow_dispatch` | 在 Actions 页面点「Run workflow」 |
+
+两个 job 各自在原生 runner 上跑（Qt 不能交叉编译，Windows 产物必须在 Windows
+上构建）：
+
+- **windows** —— `jurplel/install-qt-action` 装 Qt 6.8.2 (win64_mingw) + Ninja，
+  再尽力装 Enigma Virtual Box（装不上就自动降级成只产绿色目录），然后**直接调用
+  仓库自己的 `script/package.ps1 -Force`**，所以 CI 产出的东西和你本机跑出来的
+  完全一致；上传 `dist/*.exe` 与 `dist/*.zip`
+- **linux** —— `apt-get` 装 `qt6-base-dev` 与 `libgl1-mesa-dev`，用
+  `cmake -G Ninja` 编译，产出 `AutoClicker_v<版本>_<日期>_single_linux64` 与
+  `AutoClicker_v<版本>_<日期>_linux64.tar.gz`
+
+> Linux 版只有界面可用：连点引擎依赖 Win32 的 `SendInput` / `PostMessage`，
+> 在 Linux 上点「开始连点」会明确报错拒绝，热键也不会注册。这是设计如此，
+> 不是构建问题。
 
 ---
 
@@ -263,7 +293,7 @@ dist/
 ## 架构
 
 ```
-AutoClickerQt/
+AutoClicker/
 ├── main.cpp                    程序入口：日志 → 主题 → 主窗口
 ├── core/                       纯逻辑，不依赖 UI
 │   ├── click_engine.{h,cpp}    Win32 输入模拟 + 窗口枚举 + 循环调度

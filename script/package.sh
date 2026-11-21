@@ -1,13 +1,17 @@
 #!/bin/bash
-# AutoClickerQt 打包脚本（Linux / macOS / MSYS2）
+# AutoClicker 打包脚本（Linux / macOS / MSYS2）
 #
-# 用途：编译 Release 版本并产出可运行的程序。
-#       Windows(MSYS2) 下默认产出一份带全部 Qt 依赖的 dist/，可直接运行；
-#       非 Windows 平台编译不出可用程序（连点依赖 Win32 API），只会打源码归档。
+# 用途：编译 Release 版本并按格式命名产出两种形态。
+#       Windows(MSYS2) 下默认两种都产：
+#         dist/AutoClicker.exe                                单文件 exe
+#         dist/AutoClicker_v<版本>_<日期>_single_win64.exe    同一文件的带版本号副本
+#         dist/AutoClicker_v<版本>_<日期>_win64.zip           绿色目录 zip
+#       非 Windows 平台只能编译（连点依赖 Win32 API，运行无功能），产物只用来验证能编过。
 #
 # 用法：
-#   ./script/package.sh                     # 默认：编译 + 收集依赖（绿色目录）
-#   ./script/package.sh --single-exe        # 额外打包成单文件 exe（需 Enigma Virtual Box，仅 Windows）
+#   ./script/package.sh                     # 默认：编译 + 两种形态都产
+#   ./script/package.sh --single-exe        # 只产单文件 exe（需 Enigma Virtual Box）
+#   ./script/package.sh --skip-single       # 只产绿色目录 zip
 #   ./script/package.sh --with-source       # 额外打一份源码归档
 #   ./script/package.sh --no-exe            # 只编译，不收集依赖
 #   ./script/package.sh --no-build          # 跳过编译，直接用现有产物
@@ -28,7 +32,9 @@ CHECK_ONLY=0
 FORCE=0
 BUILD_EXE=1     # 默认就走编译 + 收集依赖这条主路径
 WITH_SOURCE=0
-SINGLE_EXE=0    # 单文件 exe 需 --single-exe 显式开启（Enigma Virtual Box）
+# 两种形态默认都产。-SingleExe / --single-exe 只产单文件，--skip-single 只产绿色目录。
+WANT_GREEN=1
+WANT_SINGLE=1
 
 # ------------------------------------------------------------------ 参数解析
 usage() {
@@ -42,7 +48,8 @@ while [ $# -gt 0 ]; do
         --no-zip)         DO_ZIP=0; shift ;;
         --no-exe)         BUILD_EXE=0; shift ;;
         --with-source)    WITH_SOURCE=1; DO_ZIP=1; shift ;;
-        --single-exe)     SINGLE_EXE=1; shift ;;
+        --single-exe)     WANT_GREEN=0; WANT_SINGLE=1; shift ;;
+        --skip-single)    WANT_GREEN=1; WANT_SINGLE=0; shift ;;
         --check-only)     CHECK_ONLY=1; shift ;;
         -e|--build-exe)   BUILD_EXE=1; shift ;;
         -f|--force)       FORCE=1; shift ;;
@@ -141,7 +148,7 @@ show_build_status() {
         # 算进来只会让自检每次都报过期，最后就没人看它了。
         #   本脚本产出 *.tar.gz 与 *_src.zip
         #   *.exe 与 *_win64.zip 是 package.ps1 的（Windows 专用）
-        # 两个脚本在 Windows 下产出的是同一份东西（dist/AutoClickerQt.exe +
+        # 两个脚本在 Windows 下产出的是同一份东西（dist/AutoClicker.exe +
         # 依赖 + _win64.zip），所以不再按「谁产出的」跳过 —— 只有源码归档
         # 是 --with-source 才产，默认跳过。
         case "$name" in
@@ -186,6 +193,27 @@ EOF
             warn "dist/ 里没有今天（$today_stamp）的产物 —— 需要打包。"
         fi
         return 1
+    fi
+
+    # 该有的形态齐全吗？两种形态产出的文件名不一样，
+    # 只按 mtime 判「过期」发现不了「这一种形态根本没打过」。
+    if [ -d "$dist" ]; then
+        local today_hits
+        today_hits="$(find "$dist" -maxdepth 1 -type f -name "*_${today_stamp}.*" 2>/dev/null | wc -l | tr -d ' ')"
+        if [ "$today_hits" -gt 0 ]; then
+            if [ "${WANT_GREEN:-1}" -eq 1 ]; then
+                if ! find "$dist" -maxdepth 1 -type f -name "*_${today_stamp}_win64.zip" 2>/dev/null | grep -q .; then
+                    warn "今天还没有绿色目录 zip（AutoClicker_v${VERSION}_${today_stamp}_win64.zip）。"
+                    all_fresh=0
+                fi
+            fi
+            if [ "${WANT_SINGLE:-1}" -eq 1 ]; then
+                if ! find "$dist" -maxdepth 1 -type f -name "*_${today_stamp}_single_win64.exe" 2>/dev/null | grep -q .; then
+                    warn "今天还没有单文件 exe（AutoClicker_v${VERSION}_${today_stamp}_single_win64.exe）。"
+                    all_fresh=0
+                fi
+            fi
+        fi
     fi
 
     echo ""
@@ -302,26 +330,26 @@ do_build() {
     fi
 
     info "配置: $cmake_bin ${args[*]}"
-    if ! "$cmake_bin" "${args[@]}" > /tmp/autoclickerqt_configure.log 2>&1; then
+    if ! "$cmake_bin" "${args[@]}" > /tmp/autoclicker_configure.log 2>&1; then
         err "配置失败"
-        tail -40 /tmp/autoclickerqt_configure.log | sed 's/^/    /'
+        tail -40 /tmp/autoclicker_configure.log | sed 's/^/    /'
         mkdir -p "$PROJECT_DIR/build"
-        mv /tmp/autoclickerqt_configure.log "$PROJECT_DIR/build/configure-error.log"
+        mv /tmp/autoclicker_configure.log "$PROJECT_DIR/build/configure-error.log"
         err "完整日志: build/configure-error.log"
         return 1
     fi
     ok "配置成功"
 
     info "编译中..."
-    if ! "$cmake_bin" --build "$build_dir" --config Release > /tmp/autoclickerqt_build.log 2>&1; then
+    if ! "$cmake_bin" --build "$build_dir" --config Release > /tmp/autoclicker_build.log 2>&1; then
         err "编译失败"
-        tail -60 /tmp/autoclickerqt_build.log | sed 's/^/    /'
+        tail -60 /tmp/autoclicker_build.log | sed 's/^/    /'
         mkdir -p "$PROJECT_DIR/build"
-        mv /tmp/autoclickerqt_build.log "$PROJECT_DIR/build/build-error.log"
+        mv /tmp/autoclicker_build.log "$PROJECT_DIR/build/build-error.log"
         err "完整日志: build/build-error.log"
         return 1
     fi
-    tail -5 /tmp/autoclickerqt_build.log | sed 's/^/    /'
+    tail -5 /tmp/autoclicker_build.log | sed 's/^/    /'
     ok "编译成功"
 }
 
@@ -333,7 +361,7 @@ pack_source() {
     local stamp dist tar_path
     stamp="$(date '+%Y%m%d')"
     dist="$PROJECT_DIR/dist"
-    tar_path="$dist/AutoClickerQt_v${VERSION}_${stamp}_src.tar.gz"
+    tar_path="$dist/AutoClicker_v${VERSION}_${stamp}_src.tar.gz"
     mkdir -p "$dist"
 
     local excludes=(
@@ -354,7 +382,7 @@ pack_source() {
 
     # 有 zip 命令就额外出一个 zip（Windows 用户解压更方便）
     if command -v zip >/dev/null 2>&1; then
-        local zip_path="$dist/AutoClickerQt_v${VERSION}_${stamp}_src.zip"
+        local zip_path="$dist/AutoClicker_v${VERSION}_${stamp}_src.zip"
         rm -f "$zip_path"
         ( cd "$PROJECT_DIR" && zip -qr "$zip_path" . \
             -x 'build/*' 'build-*/*' 'cmake-build-*/*' 'dist/*' '.git/*' \
@@ -378,11 +406,11 @@ build_exe() {
     local build_dir="$PROJECT_DIR/build/release"
     local dist="$PROJECT_DIR/dist"
     local exe=""
-    for cand in "$build_dir/AutoClickerQt.exe" "$build_dir/Release/AutoClickerQt.exe"; do
+    for cand in "$build_dir/AutoClicker.exe" "$build_dir/Release/AutoClicker.exe"; do
         [ -f "$cand" ] && { exe="$cand"; break; }
     done
     if [ -z "$exe" ]; then
-        err "编译产物里找不到 AutoClickerQt.exe"
+        err "编译产物里找不到 AutoClicker.exe"
         return 1
     fi
     info "可执行文件: $exe"
@@ -402,27 +430,28 @@ build_exe() {
         return 1
     fi
 
-    rm -rf "$dist"
-    mkdir -p "$dist"
-    cp "$exe" "$dist/AutoClickerQt.exe"
+    local target="${TARGET_DIR:-$dist}"
+    rm -rf "$target"
+    mkdir -p "$target"
+    cp "$exe" "$target/AutoClicker.exe"
     # cp 保留编译时的 mtime，自检会一直判「过期」。写成部署时间。
-    touch "$dist/AutoClickerQt.exe"
-    ok "已复制 exe 到 dist/"
+    touch "$target/AutoClicker.exe"
+    ok "已复制 exe 到 $(basename "$target")/"
 
     "$deployqt" --release --no-translations --no-system-d3d-compiler \
                 --no-system-dxc-compiler --no-opengl-sw --compiler-runtime \
-                "$dist/AutoClickerQt.exe" >/dev/null 2>&1 || \
+                "$target/AutoClicker.exe" >/dev/null 2>&1 || \
         warn "windeployqt 返回非零，请检查依赖是否完整"
 
     # GIF 播放依赖 qgif.dll
     if [ -n "$qt_prefix" ] && [ -f "$qt_prefix/plugins/imageformats/qgif.dll" ] \
-       && [ ! -f "$dist/imageformats/qgif.dll" ]; then
-        mkdir -p "$dist/imageformats"
-        cp "$qt_prefix/plugins/imageformats/qgif.dll" "$dist/imageformats/"
+       && [ ! -f "$target/imageformats/qgif.dll" ]; then
+        mkdir -p "$target/imageformats"
+        cp "$qt_prefix/plugins/imageformats/qgif.dll" "$target/imageformats/"
         info "补充 imageformats/qgif.dll"
     fi
 
-    if [ ! -f "$dist/platforms/qwindows.dll" ]; then
+    if [ ! -f "$target/platforms/qwindows.dll" ]; then
         warn "缺少 platforms/qwindows.dll —— 运行时可能报找不到平台插件"
     fi
     ok "依赖收集完成"
@@ -478,13 +507,13 @@ evb_emit_dir() {
     local dir="$1" prefix="$2" pad="$3" f name
 
     # 先输出本层的文件。
-    # 主程序自身与归档包必须排除：把 AutoClickerQt.exe 当成虚拟文件再嵌一遍，
+    # 主程序自身与归档包必须排除：把 AutoClicker.exe 当成虚拟文件再嵌一遍，
     # 会和真实入口冲突，跑起来直接访问违例（0xC0000005）。
     while IFS= read -r f; do
         [ -z "$f" ] && continue
         name="$(basename "$f")"
         case "$name" in
-            AutoClickerQt.exe|*.zip|*.tar.gz) continue ;;
+            AutoClicker.exe|*.zip|*.tar.gz) continue ;;
         esac
         {
             printf '%s<File>\n' "$pad"
@@ -519,13 +548,48 @@ evb_emit_dir() {
     done < <(find "$dir" -maxdepth 1 -mindepth 1 -type d | sort)
 }
 
+# 把绿色目录压成 AutoClicker_v<版本>_<日期>_win64.zip
+zip_green() {
+    step "压缩绿色目录"
+
+    local src="${1:-$PROJECT_DIR/dist}"
+    local stamp zip_path
+    stamp="$(date '+%Y%m%d')"
+    zip_path="$PROJECT_DIR/dist/AutoClicker_v${VERSION}_${stamp}_win64.zip"
+    mkdir -p "$PROJECT_DIR/dist"
+
+    rm -f "$zip_path"
+    if command -v zip >/dev/null 2>&1; then
+        ( cd "$src" && zip -qr "$zip_path" . -x '*.zip' 'config/*' 'log/*' ) || {
+            err "压缩失败"; return 1; }
+    elif command -v powershell.exe >/dev/null 2>&1; then
+        # MSYS2 里通常没有 zip —— 用 Windows 自带的 Compress-Archive。
+        # 注意它要求 -LiteralPath 的路径是 Windows 形式，交给 cygpath/win_path 转。
+        local w_src w_dst
+        w_src="$(win_path "$src")"
+        w_dst="$(win_path "$zip_path")"
+        powershell.exe -NoProfile -NonInteractive -Command \
+            "Compress-Archive -Path '$w_src\*' -DestinationPath '$w_dst' -CompressionLevel Optimal -Force" \
+            >/dev/null 2>&1 || {
+            err "Compress-Archive 压缩失败"; return 1; }
+    else
+        warn "没有 zip / powershell 可用，跳过绿色目录压缩"
+        return 0
+    fi
+
+    local size
+    size="$(awk -v b="$(stat -c %s "$zip_path" 2>/dev/null || stat -f %z "$zip_path")" 'BEGIN { printf "%.0f KB", b/1024 }')"
+    ok "绿色目录包: dist/$(basename "$zip_path") ($size)"
+    return 0
+}
+
 do_single_exe() {
     step "打包成单文件 exe"
 
     local dist="$PROJECT_DIR/dist"
-    local exe="$dist/AutoClickerQt.exe"
+    local exe="$dist/AutoClicker.exe"
     if [ ! -f "$exe" ]; then
-        err "dist/AutoClickerQt.exe 不存在，先跑一次不带 --single-exe 的打包"
+        err "dist/AutoClicker.exe 不存在，先跑一次不带 --single-exe 的打包"
         return 1
     fi
 
@@ -540,13 +604,13 @@ do_single_exe() {
     info "Enigma Virtual Box: $evb_dir"
 
     local tmp
-    tmp="$(mktemp -d "${TMPDIR:-/tmp}/autoclickerqt_evb.XXXXXX")"
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/autoclicker_evb.XXXXXX")"
     EVB_FILE="$tmp/project.evb"
     local out_exe="$(win_path "$tmp")/boxed.exe"
 
     # 待嵌入的文件：dist 里除主 exe 与源归档之外的全部内容
     local file_count
-    file_count=$(find "$dist" -type f ! -name "AutoClickerQt.exe" ! -name "*.zip" ! -name "*.tar.gz" | wc -l | tr -d ' ')
+    file_count=$(find "$dist" -type f ! -name "AutoClicker.exe" ! -name "*.zip" ! -name "*.tar.gz" | wc -l | tr -d ' ')
     info "待嵌入 $file_count 个文件"
 
     {
@@ -606,16 +670,26 @@ do_single_exe() {
         return 1
     fi
 
-    # 清理 dist 为单文件形态（config/ 与 log/ 保留，那是运行期数据）
+    # 清理 dist 为单文件形态（config/ log/ 与已压好的 zip 都保留）
     find "$dist" -mindepth 1 -maxdepth 1 \
-        ! -name "AutoClickerQt.exe" ! -name "config" ! -name "log" \
+        ! -name "AutoClicker.exe" ! -name "config" ! -name "log" ! -name "*.zip" \
         -exec rm -rf {} + 2>/dev/null || true
     cp "$tmp/boxed.exe" "$exe"
     touch "$exe"
     local size
     size=$(du -m "$exe" | cut -f1)
     ok "单文件 exe 生成成功（${size} MB）"
-    info "dist/ 已清理为单文件形态（只剩 AutoClickerQt.exe）"
+
+    # 除了固定名 AutoClicker.exe（方便直接双击），再留一份带版本号的，
+    # 这样 dist/ 里的东西都能按名字看出是哪一版、哪一天打的。
+    local stamp versioned
+    stamp="$(date '+%Y%m%d')"
+    versioned="$dist/AutoClicker_v${VERSION}_${stamp}_single_win64.exe"
+    cp "$exe" "$versioned"
+    touch "$versioned"
+    ok "带版本号的副本: $(basename "$versioned")"
+
+    info "dist/ 已清理为单文件形态（只留 exe 与压缩包）"
 
     rm -rf "$tmp"
     return 0
@@ -624,10 +698,14 @@ do_single_exe() {
 # ================================================================ 主流程
 
 echo ""
-printf '%sAutoClickerQt 打包脚本%s\n' "$C_STEP" "$C_OFF"
+printf '%sAutoClicker 打包脚本%s\n' "$C_STEP" "$C_OFF"
 info "项目: $PROJECT_DIR"
 info "平台: $PLATFORM"
 info "版本: $VERSION"
+_forms=""
+[ "$WANT_GREEN" -eq 1 ] && _forms="绿色目录 zip"
+[ "$WANT_SINGLE" -eq 1 ] && _forms="${_forms:+$_forms + }单文件 exe"
+info "形态: $_forms"
 
 if show_build_status; then
     BUILD_FRESH=1
@@ -663,24 +741,44 @@ else
     step "跳过编译（--no-build）"
 fi
 
+# 两种形态默认都产：-SingleExe/--single-exe 只产单文件，--skip-single 只产绿色目录。
+GREEN_STAGE="$PROJECT_DIR/build/green"
+BOTH_FORMS=0
+[ "$WANT_GREEN" -eq 1 ] && [ "$WANT_SINGLE" -eq 1 ] && BOTH_FORMS=1
+
 if [ "$BUILD_EXE" -eq 1 ]; then
     if [ "$PLATFORM" = "windows" ]; then
-        build_exe || exit 1
+        # dist/ 一律先清空：上一轮的旧产物如果留着，会被单文件那步当成依赖嵌进去。
+        rm -rf "$PROJECT_DIR/dist"
+        mkdir -p "$PROJECT_DIR/dist"
+
+        if [ "$WANT_GREEN" -eq 1 ]; then
+            # 两种都要时先铺到暂存区，压完 zip 再铺一份给单文件那步
+            if [ "$BOTH_FORMS" -eq 1 ]; then
+                TARGET_DIR="$GREEN_STAGE" build_exe || exit 1
+                zip_green "$GREEN_STAGE" || exit 1
+            else
+                build_exe || exit 1
+                zip_green "$PROJECT_DIR/dist" || exit 1
+            fi
+        fi
+
+        if [ "$WANT_SINGLE" -eq 1 ]; then
+            if [ "$BOTH_FORMS" -eq 1 ]; then
+                # 把绿色目录整体复制一份到 dist/，EVB 从这里收文件
+                cp -r "$GREEN_STAGE"/. "$PROJECT_DIR/dist"/
+            elif [ "$WANT_GREEN" -eq 0 ]; then
+                build_exe || exit 1
+            fi
+            do_single_exe || exit 1
+            rm -rf "$GREEN_STAGE"
+        fi
     else
         step "跳过收集依赖"
         warn "非 Windows 平台无法产出可运行程序（当前平台: $PLATFORM）"
     fi
 else
     step "跳过收集依赖（--no-exe）"
-fi
-
-if [ "$SINGLE_EXE" -eq 1 ]; then
-    if [ "$PLATFORM" = "windows" ]; then
-        do_single_exe || exit 1
-    else
-        step "跳过单文件打包"
-        warn "单文件 exe 依赖 Enigma Virtual Box（仅 Windows），当前平台: $PLATFORM"
-    fi
 fi
 
 if [ "$WITH_SOURCE" -eq 1 ] && [ "$DO_ZIP" -eq 1 ]; then
@@ -693,12 +791,12 @@ fi
 echo ""
 printf '%s打包完成。%s\n' "$C_OK" "$C_OFF"
 info "dist: $PROJECT_DIR/dist"
-if [ -f "$PROJECT_DIR/dist/AutoClickerQt.exe" ]; then
-    size="$(awk -v b="$(stat -c %s "$PROJECT_DIR/dist/AutoClickerQt.exe" 2>/dev/null || echo 0)" 'BEGIN { printf "%.1f MB", b/1048576 }')"
-    if [ "$SINGLE_EXE" -eq 1 ]; then
-        ok "单文件 exe: dist/AutoClickerQt.exe  ($size)"
-    else
-        ok "可执行文件: dist/AutoClickerQt.exe  ($size)"
-    fi
-fi
+# 按名字列一遍，和 package.ps1 的输出保持一致
+find "$PROJECT_DIR/dist" -maxdepth 1 -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.tar.gz' \) \
+     -printf '%f\n' 2>/dev/null | sort | while IFS= read -r n; do
+    f="$PROJECT_DIR/dist/$n"
+    size="$(awk -v b="$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f" 2>/dev/null || echo 0)" \
+        'BEGIN { printf "%.2f MB", b/1048576 }')"
+    printf '  %-48s %10s\n' "$n" "$size"
+done
 exit 0

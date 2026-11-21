@@ -148,7 +148,7 @@ HotkeyListener::HotkeyListener(QObject *parent)
     : QObject(parent), d(std::make_unique<Impl>()) {
 #ifdef Q_OS_WIN
     HINSTANCE inst = GetModuleHandleW(nullptr);
-    static const wchar_t *kClassName = L"AutoClickerQtHotkeyWindow";
+    static const wchar_t *kClassName = L"AutoClickerHotkeyWindow";
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -165,7 +165,7 @@ HotkeyListener::HotkeyListener(QObject *parent)
     }
 
     // 消息专用窗口：不依附主窗口，这样主窗口隐藏到托盘时热键依然有效
-    d->hwnd = CreateWindowExW(0, kClassName, L"AutoClickerQtHotkey",
+    d->hwnd = CreateWindowExW(0, kClassName, L"AutoClickerHotkey",
                               0, 0, 0, 0, 0,
                               HWND_MESSAGE, nullptr, inst, this);
     if (!d->hwnd) {

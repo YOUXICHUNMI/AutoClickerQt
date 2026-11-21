@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(AutoClickerQt
+project(AutoClicker
         VERSION 1.0.0
         DESCRIPTION "Windows 自动连点器 (Qt6 / C++ 版)"
         LANGUAGES CXX)
@@ -53,20 +53,20 @@ set(PROJECT_RESOURCES
         resources/resources.qrc
 )
 
-qt_add_executable(AutoClickerQt
+qt_add_executable(AutoClicker
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
         ${PROJECT_RESOURCES}
 )
 
-target_include_directories(AutoClickerQt PRIVATE
+target_include_directories(AutoClicker PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/utils
         ${CMAKE_CURRENT_SOURCE_DIR}/core
         ${CMAKE_CURRENT_SOURCE_DIR}/ui
 )
 
-target_link_libraries(AutoClickerQt PRIVATE
+target_link_libraries(AutoClicker PRIVATE
         Qt::Core
         Qt::Gui
         Qt::Widgets
@@ -74,15 +74,15 @@ target_link_libraries(AutoClickerQt PRIVATE
 
 if (WIN32)
     # 发布版不弹控制台窗口；日志仍然写入 log/ 目录
-    set_target_properties(AutoClickerQt PROPERTIES WIN32_EXECUTABLE TRUE)
-    target_link_libraries(AutoClickerQt PRIVATE user32)
-    target_compile_definitions(AutoClickerQt PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    set_target_properties(AutoClicker PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(AutoClicker PRIVATE user32)
+    target_compile_definitions(AutoClicker PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif ()
 
 if (MSVC)
-    target_compile_options(AutoClickerQt PRIVATE /utf-8 /W4)
+    target_compile_options(AutoClicker PRIVATE /utf-8 /W4)
 else ()
-    target_compile_options(AutoClickerQt PRIVATE -Wall -Wextra)
+    target_compile_options(AutoClicker PRIVATE -Wall -Wextra)
 endif ()
 
 # ------------------------------------------------- Qt 运行时 DLL 拷贝（Windows）
@@ -101,23 +101,23 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif ()
 
     if (EXISTS "${QT_INSTALL_PATH}/plugins/platforms/qwindows${DEBUG_SUFFIX}.dll")
-        add_custom_command(TARGET AutoClickerQt POST_BUILD
+        add_custom_command(TARGET AutoClicker POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:AutoClickerQt>/platforms/")
-        add_custom_command(TARGET AutoClickerQt POST_BUILD
+                "$<TARGET_FILE_DIR:AutoClicker>/platforms/")
+        add_custom_command(TARGET AutoClicker POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy
                 "${QT_INSTALL_PATH}/plugins/platforms/qwindows${DEBUG_SUFFIX}.dll"
-                "$<TARGET_FILE_DIR:AutoClickerQt>/platforms/")
+                "$<TARGET_FILE_DIR:AutoClicker>/platforms/")
     endif ()
 
     foreach (QT_LIB Core Gui Widgets)
         if (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll")
-            add_custom_command(TARGET AutoClickerQt POST_BUILD
+            add_custom_command(TARGET AutoClicker POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E copy
                     "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll"
-                    "$<TARGET_FILE_DIR:AutoClickerQt>")
+                    "$<TARGET_FILE_DIR:AutoClicker>")
         endif ()
     endforeach ()
 endif ()
 
-qt_finalize_executable(AutoClickerQt)
+qt_finalize_executable(AutoClicker)

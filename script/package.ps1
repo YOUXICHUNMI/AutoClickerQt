@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    AutoClickerQt 打包脚本（Windows）
+    AutoClicker 打包脚本（Windows）
 
 .DESCRIPTION
     编译 Release 版本，用 windeployqt 收集 Qt 运行时依赖，最后压成绿色包。
@@ -20,15 +20,18 @@
     跳过编译，只用现有产物打包（产物已在 dist 时有用）。
 
 .PARAMETER SingleExe
-    打包成一个单文件 exe（用 Enigma Virtual Box 把所有 Qt DLL 与插件嵌进去）。
-    不加这个开关时，产出的是"绿色目录"——一个文件夹，里面是可执行文件加一堆 DLL。
+    只产单文件 exe，不打绿色目录 zip。
 
-    两种形态二选一：
-      绿色目录（默认）：dist\ 里是 AutoClickerQt.exe + Qt6*.dll + platforms\ 等，
-                        启动快、可换 DLL 调试，但要整个文件夹一起拷。
-      单文件 exe       ：dist\ 里只有 AutoClickerQt.exe 一个文件（约 17 MB），
-                        随便拷到哪都能双击运行，DLL 在运行时由内存虚拟化提供、
-                        不会落盘。
+    默认（不加任何形态开关）两种都产：
+      dist\AutoClicker.exe                          单文件 exe，拷一个文件就能跑
+      dist\AutoClicker_v<版本>_<日期>_single_win64.exe   同一个文件，带版本号便于归档
+      dist\AutoClicker_v<版本>_<日期>_win64.zip     绿色目录 zip（exe + DLL 文件夹）
+
+    为什么两种都给：单文件适合分发给别人，绿色目录适合自己留着排障
+    —— 出问题时能直接换 DLL 试。
+
+.PARAMETER SkipSingle
+    只产绿色目录，不打单文件 exe（等价于旧版的默认行为）。
 
 .PARAMETER EnigmaVBDir
     Enigma Virtual Box 的安装目录（只有 -SingleExe 时才用）。
@@ -55,9 +58,19 @@
     默认产出绿色目录（exe + DLL 文件夹）。
 
 .EXAMPLE
+    .\script\package.ps1
+
+    两种形态都产：单文件 exe 与绿色目录 zip，各自带版本号文件名。
+
+.EXAMPLE
     .\script\package.ps1 -SingleExe
 
-    产出一个单文件 exe，拷到任何地方双击就能跑。
+    只产单文件 exe，跳过绿色目录 zip（快一些）。
+
+.EXAMPLE
+    .\script\package.ps1 -SkipSingle
+
+    只产绿色目录 zip，不跑 Enigma Virtual Box。
 
 .EXAMPLE
     .\script\package.ps1 -Version 1.2.0 -QtDir C:\Qt\6.8.0\msvc2019_64
@@ -72,6 +85,7 @@ param(
     [string]$QtDir = "",
     [string]$BuildDir = "",
     [switch]$SingleExe,
+    [switch]$SkipSingle,
     [string]$EnigmaVBDir = "",
     [switch]$SkipBuild,
     [switch]$SkipZip,
@@ -88,6 +102,9 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $ProjectDir = Split-Path -Parent $ScriptDir
 $DistDir = Join-Path $ProjectDir "dist"
 $DefaultBuildDir = Join-Path $ProjectDir "build\release"
+# 绿色目录的暂存区：两种形态都要时先铺在这里，压完 zip 再被 EVB 收走，
+# dist\ 最后只留可分发的东西（单文件 exe + 带版本号的 zip）
+$GreenStageDir = Join-Path $ProjectDir "build\green"
 
 # 参与"源码是否比产物新"判定的路径。
 # config/ 与 log/ 是运行期数据，不参与；build/dist/.git 由 EXCLUDE_DIRS 过滤掉。
@@ -289,7 +306,7 @@ function Show-BuildStatus {
         # 产物归属：判过期的意义是"提醒我该重打了"。不属于自己的产物永远打不出来，
         # 算进来只会让自检每次都报过期，最后就没人看它了。
         #   *_src.tar.gz / *_src.zip → 源码归档，只有 package.sh --with-source 会产
-        #   本脚本与 package.sh 在 Windows 下都产出 dist\AutoClickerQt.exe + 依赖 + *_win64.zip，
+        #   本脚本与 package.sh 在 Windows 下都产出 dist\AutoClicker.exe + 依赖 + *_win64.zip，
         #   所以这两类不再按"谁产出的"跳过 —— 谁跑都能重建它们。
         if ($a.Name -like '*_src.tar.gz' -or $a.Name -like '*_src.zip') {
             Write-Host ("  [跳过] {0}  ({1})  源码归档，package.sh --with-source 的产物" -f $a.Name, $sizeMb) -ForegroundColor DarkGray
@@ -328,12 +345,32 @@ function Show-BuildStatus {
     }
 
     # 版本号一致性
-    $exePath = Join-Path $DistDir "AutoClickerQt.exe"
-    if ((Test-Path $exePath) -and -not $SkipZip) {
-        $zipName = "AutoClickerQt_v$Ver"
+    $exePath = Join-Path $DistDir "AutoClicker.exe"
+    if (Test-Path $exePath) {
+        $zipName = "AutoClicker_v$Ver"
         $matching = $artifacts | Where-Object { $_.Name -like "$zipName*" }
         if (-not $matching) {
             Write-Warn2 "dist\ 里没有版本号 $Ver 的包，可能是别的版本打的"
+        }
+    }
+
+    # 该有的形态齐全吗？两种形态产出的文件名不一样，
+    # 只按 mtime 判「过期」发现不了「这一种形态根本没打过」。
+    $todayArtifacts = $artifacts | Where-Object { $_.Name -match "_$todayStamp`." }
+    if ($todayArtifacts) {
+        if (-not $SingleExe) {
+            $hasGreen = $todayArtifacts | Where-Object { $_.Name -like '*_win64.zip' }
+            if (-not $hasGreen) {
+                Write-Warn2 "今天还没有绿色目录 zip（AutoClicker_v${Ver}_${todayStamp}_win64.zip）。"
+                $allFresh = $false
+            }
+        }
+        if (-not $SkipSingle) {
+            $hasSingle = $todayArtifacts | Where-Object { $_.Name -like '*_single_win64.exe' }
+            if (-not $hasSingle) {
+                Write-Warn2 "今天还没有单文件 exe（AutoClicker_v${Ver}_${todayStamp}_single_win64.exe）。"
+                $allFresh = $false
+            }
         }
     }
 
@@ -433,7 +470,7 @@ function Invoke-Build {
     }
 
     Write-Info "配置: cmake $($configureArgs -join ' ')"
-    $logFile = Join-Path $env:TEMP "autoclickerqt_configure_$(Get-Random).log"
+    $logFile = Join-Path $env:TEMP "autoclicker_configure_$(Get-Random).log"
 
     # 原生命令写 stderr 在 ErrorActionPreference=Stop 下会变成终止性错误，
     # 即使重定向了也一样 —— 这里临时降级，最后单独判 $LASTEXITCODE。
@@ -458,7 +495,7 @@ function Invoke-Build {
     Write-Ok "配置成功"
 
     Write-Info "编译中..."
-    $buildLog = Join-Path $env:TEMP "autoclickerqt_build_$(Get-Random).log"
+    $buildLog = Join-Path $env:TEMP "autoclicker_build_$(Get-Random).log"
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -482,28 +519,28 @@ function Invoke-Build {
 
 # --------------------------------------------------- 收集依赖并铺到 dist
 function Invoke-Deploy {
-    param([string]$Qt, [string]$Dir)
+    param([string]$Qt, [string]$Dir, [string]$TargetDir = $TargetDir)
 
     Write-Step "收集 Qt 运行时依赖"
 
     $candidates = @(
-        (Join-Path $Dir "AutoClickerQt.exe"),
-        (Join-Path $Dir "Release\AutoClickerQt.exe")
+        (Join-Path $Dir "AutoClicker.exe"),
+        (Join-Path $Dir "Release\AutoClicker.exe")
     )
     $exePath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $exePath) {
-        throw "编译产物里找不到 AutoClickerQt.exe，查找过：`n  $($candidates -join "`n  ")"
+        throw "编译产物里找不到 AutoClicker.exe，查找过：`n  $($candidates -join "`n  ")"
     }
     Write-Info "可执行文件: $exePath"
 
-    if (Test-Path $DistDir) {
-        Remove-Item $DistDir -Recurse -Force
+    if (Test-Path $TargetDir) {
+        Remove-Item $TargetDir -Recurse -Force
     }
-    New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-    Copy-Item $exePath (Join-Path $DistDir "AutoClickerQt.exe") -Force
+    New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    Copy-Item $exePath (Join-Path $TargetDir "AutoClicker.exe") -Force
     # Copy-Item 保留的是编译时的 mtime，自检拿它跟源码比会一直判「过期」，
     # 可实际上刚部署完。这里把部署时间写成当前时间。
-    (Get-Item (Join-Path $DistDir "AutoClickerQt.exe")).LastWriteTime = Get-Date
+    (Get-Item (Join-Path $TargetDir "AutoClicker.exe")).LastWriteTime = Get-Date
     Write-Ok "已复制 exe 到 dist\"
 
     $windeployqt = Join-Path $Qt "bin\windeployqt.exe"
@@ -511,8 +548,8 @@ function Invoke-Deploy {
         throw "找不到 windeployqt：$windeployqt"
     }
 
-    $target = Join-Path $DistDir "AutoClickerQt.exe"
-    $logFile = Join-Path $env:TEMP "autoclickerqt_deploy_$(Get-Random).log"
+    $target = Join-Path $TargetDir "AutoClicker.exe"
+    $logFile = Join-Path $env:TEMP "autoclicker_deploy_$(Get-Random).log"
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -532,7 +569,7 @@ function Invoke-Deploy {
     }
 
     # GIF 播放依赖 qgif.dll，windeployqt 有时不会自动带上（取决于它怎么分析依赖）
-    $imageFormats = Join-Path $DistDir "imageformats"
+    $imageFormats = Join-Path $TargetDir "imageformats"
     $qgif = Join-Path $Qt "plugins\imageformats\qgif.dll"
     if ((Test-Path $qgif) -and -not (Test-Path (Join-Path $imageFormats "qgif.dll"))) {
         New-Item -ItemType Directory -Force -Path $imageFormats | Out-Null
@@ -542,31 +579,31 @@ function Invoke-Deploy {
 
     Remove-Item $logFile -Force -ErrorAction SilentlyContinue
 
-    $dllCount = (Get-ChildItem $DistDir -Recurse -File -Filter *.dll).Count
+    $dllCount = (Get-ChildItem $TargetDir -Recurse -File -Filter *.dll).Count
     Write-Ok "windeployqt 完成，共 $dllCount 个 DLL"
 
     # 目录结构自检
-    if (-not (Test-Path (Join-Path $DistDir "platforms\qwindows.dll"))) {
+    if (-not (Test-Path (Join-Path $TargetDir "platforms\qwindows.dll"))) {
         Write-Warn2 "缺少 platforms\qwindows.dll —— 运行时会报「could not find or load the Qt platform plugin windows」"
     }
 }
 
 # ------------------------------------------------------------------ 打包
 function Invoke-Package {
-    param([string]$Ver, [string]$Dir)
+    param([string]$Ver, [string]$SourceDir = $DistDir)
 
     Write-Step "压缩发布包"
 
     $stamp = Get-Date -Format 'yyyyMMdd'
-    $zipName = "AutoClickerQt_v${Ver}_${stamp}_win64.zip"
+    $zipName = "AutoClicker_v${Ver}_${stamp}_win64.zip"
     $zipPath = Join-Path $DistDir $zipName
 
     # 防止把上一轮的旧包也压进去
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 
-    $items = Get-ChildItem -LiteralPath $DistDir | Where-Object { $_.Extension -ne '.zip' }
+    $items = Get-ChildItem -LiteralPath $SourceDir | Where-Object { $_.Extension -ne '.zip' }
     if (-not $items) {
-        throw "dist\ 是空的，没什么可打包"
+        throw "绿色目录是空的，没什么可打包: $SourceDir"
     }
 
     Compress-Archive -LiteralPath ($items | ForEach-Object { $_.FullName }) `
@@ -698,18 +735,18 @@ function New-EvbProjectFile {
 }
 
 function Invoke-SingleExe {
-    param([string]$EnigmaDir)
+    param([string]$EnigmaDir, [string]$Ver)
 
     Write-Step "打包成单文件 exe"
 
-    $exePath = Join-Path $DistDir "AutoClickerQt.exe"
+    $exePath = Join-Path $DistDir "AutoClicker.exe"
     if (-not (Test-Path $exePath)) {
-        throw "dist\ 里没有 AutoClickerQt.exe，没法做单文件打包"
+        throw "dist\ 里没有 AutoClicker.exe，没法做单文件打包"
     }
 
     # 要嵌进去的是 dist 下除「主 exe / 压缩包 / 运行期数据」之外的全部内容
     $embed = Get-ChildItem -LiteralPath $DistDir -Recurse -File | Where-Object {
-        $_.Name -ne 'AutoClickerQt.exe' -and
+        $_.Name -ne 'AutoClicker.exe' -and
         $_.Extension -ne '.zip' -and
         $_.FullName -notmatch '\\(config|log)\\'
     }
@@ -721,7 +758,7 @@ function Invoke-SingleExe {
     $embedMb = [math]::Round((($embed | Measure-Object Length -Sum).Sum) / 1MB, 2)
     Write-Info "待嵌入 $($embed.Count) 个文件，共 $embedMb MB"
 
-    $evbDir = Join-Path $env:TEMP "autoclickerqt_evb_$(Get-Random)"
+    $evbDir = Join-Path $env:TEMP "autoclicker_evb_$(Get-Random)"
     New-Item -ItemType Directory -Force -Path $evbDir | Out-Null
 
     # 三个路径约束（踩过坑，别改）：
@@ -760,7 +797,7 @@ function Invoke-SingleExe {
 
         # 单文件模式下 dist 里只留这一个 exe，免得用户不知道该拷哪个
         Get-ChildItem -LiteralPath $DistDir -Force | Where-Object {
-            $_.Name -ne 'AutoClickerQt.exe' -and
+            $_.Name -ne 'AutoClicker.exe' -and
             $_.Extension -ne '.zip' -and
             $_.Name -notin @('config', 'log')
         } | Remove-Item -Recurse -Force
@@ -768,7 +805,15 @@ function Invoke-SingleExe {
         Move-Item $tmpOut $exePath -Force
         (Get-Item $exePath).LastWriteTime = Get-Date
 
-        Write-Ok "dist\ 已清理为单文件形态（只剩 AutoClickerQt.exe）"
+        # 除了固定名 AutoClicker.exe（方便直接双击），再留一份带版本号的，
+        # 这样 dist\ 里的东西都能按名字看出是哪一版、哪一天打的。
+        # 和绿色目录 zip 的命名规则对齐：<名字>_v<版本>_<日期>_<形态>_<平台>.
+        $stamp = Get-Date -Format 'yyyyMMdd'
+        $versioned = Join-Path $DistDir "AutoClicker_v${Ver}_${stamp}_single_win64.exe"
+        Copy-Item $exePath $versioned -Force
+        Write-Ok "带版本号的副本: $(Split-Path -Leaf $versioned)"
+
+        Write-Ok "dist\ 已清理为单文件形态（只留 exe 与压缩包）"
     } finally {
         Remove-Item $evbDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -777,14 +822,15 @@ function Invoke-SingleExe {
 # ================================================================ 主流程
 
 Write-Host ""
-Write-Host "AutoClickerQt 打包脚本" -ForegroundColor Cyan
+Write-Host "AutoClicker 打包脚本" -ForegroundColor Cyan
 Write-Host "项目: $ProjectDir" -ForegroundColor Gray
 Write-Host "版本: $Version" -ForegroundColor Gray
-if ($SingleExe) {
-    Write-Host "形态: 单文件 exe（DLL 内嵌，拷一个文件就能跑）" -ForegroundColor Gray
-} else {
-    Write-Host "形态: 绿色目录（exe + DLL 文件夹，默认）" -ForegroundColor Gray
-}
+$wantGreen  = -not $SingleExe       # 默认要绿色目录；-SingleExe 时才不要
+$wantSingle = -not $SkipSingle      # 默认要单文件；-SkipSingle 时才不要
+$forms = @()
+if ($wantGreen)  { $forms += "绿色目录 zip" }
+if ($wantSingle) { $forms += "单文件 exe" }
+Write-Host "形态: $($forms -join ' + ')" -ForegroundColor Gray
 
 if (-not $BuildDir) { $BuildDir = $DefaultBuildDir }
 
@@ -811,9 +857,9 @@ try {
     $qt = Find-QtDir
     Write-Info "Qt: $qt"
 
-    # 单文件模式先确认工具在，免得白编译一场才失败
+    # 要单文件就先确认 Enigma Virtual Box 在，免得白编译一场才失败
     $evb = $null
-    if ($SingleExe) {
+    if ($wantSingle) {
         $evb = Find-EnigmaVBDir
         Write-Info "Enigma Virtual Box: $evb"
     }
@@ -824,29 +870,50 @@ try {
         Write-Step "跳过编译（-SkipBuild）"
     }
 
-    Invoke-Deploy -Qt $qt -Dir $BuildDir
+    # 两种形态的要分开铺，否则单文件那步会把绿色目录的 DLL 收走，
+    # 就没东西可压 zip 了。
+    #   - 只有单文件     → 直接铺到 dist\，EVB 原地收走，dist 剩一个 exe
+    #   - 只有绿色目录   → 直接铺到 dist\，就地压 zip
+    #   - 两种都要       → 先铺到 build\green\，压完 zip 再铺一份到 dist\ 给 EVB
+    $bothForms = $wantGreen -and $wantSingle
 
-    if ($SingleExe) {
-        Invoke-SingleExe -EnigmaDir $evb
+    # dist\ 一律先清空重建：上一轮的旧产物（可能是改名前的 AutoClickerQt.exe）
+    # 如果留着，会被 Invoke-SingleExe 当成依赖一起嵌进去，体积白白多一个 exe。
+    if (Test-Path $DistDir) { Remove-Item $DistDir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+
+    if ($wantGreen) {
+        $greenDir = if ($bothForms) { $GreenStageDir } else { $DistDir }
+        if (Test-Path $greenDir) { Remove-Item $greenDir -Recurse -Force }
+        Invoke-Deploy -Qt $qt -Dir $BuildDir -TargetDir $greenDir
+
+        $zip = $null
+        if (-not $SkipZip) {
+            $zip = Invoke-Package -Ver $Version -SourceDir $greenDir
+        }
     }
 
-    $zip = $null
-    if (-not $SkipZip) {
-        $zip = Invoke-Package -Ver $Version -Dir $BuildDir
+    if ($wantSingle) {
+        if ($bothForms) {
+            # 把绿色目录整体复制一份到 dist\，EVB 从这里收文件
+            foreach ($item in Get-ChildItem -LiteralPath $greenDir -Force) {
+                Copy-Item $item.FullName -Destination $DistDir -Recurse -Force
+            }
+        }
+        Invoke-SingleExe -EnigmaDir $evb -Ver $Version
+        if ($bothForms -and (Test-Path $GreenStageDir)) {
+            Remove-Item $GreenStageDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     Write-Host ""
     Write-Host "打包完成。" -ForegroundColor Green
     Write-Host "  dist: $DistDir" -ForegroundColor Gray
-    if ($SingleExe) {
-        $exe = Join-Path $DistDir "AutoClickerQt.exe"
-        if (Test-Path $exe) {
-            $mb = [math]::Round((Get-Item $exe).Length / 1MB, 2)
-            Write-Host "  单文件 exe: $exe  ($mb MB)" -ForegroundColor Gray
-        }
-    }
-    if ($zip) {
-        Write-Host "  发布包: $zip" -ForegroundColor Gray
+    Get-ChildItem -LiteralPath $DistDir -File | Where-Object {
+        $_.Extension -in @('.exe', '.zip', '.tar.gz')
+    } | Sort-Object Name | ForEach-Object {
+        $mb = [math]::Round($_.Length / 1MB, 2)
+        Write-Host ("  {0,-48} {1,8} MB" -f $_.Name, $mb) -ForegroundColor Gray
     }
     exit 0
 } catch {
