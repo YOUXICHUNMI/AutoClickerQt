@@ -127,6 +127,25 @@ AutoClickerQt/
 **本项目的规则**：`ConfigManager::save()` 之前必须剔除 `target_hwnd`，
 目标窗口只按 `target_title` 持久化，启动时重新按标题查找。
 
+### 4.7 全局热键用 RegisterHotKey 而不是键盘钩子
+
+原版用 Python 的 `keyboard` 库，README 明确写了「需要管理员权限」——
+这是个明确的体验缺陷：普通用户双击打开，热键就是没反应，还没有任何提示。
+
+Qt 版在 Windows 上改用 Win32 `RegisterHotKey`：
+
+- **普通权限即可**，不需要提权；
+- 零第三方依赖；
+- 失败原因能拿到明确的错误码（比如 1409 = 该组合已被别的程序占用），
+  可以直接告诉用户「热键被占用了」，而不是静默失效。
+
+代价是热键会被系统独占，且必须是「修饰键 + 主键」或单个 VK 键的组合。
+对本项目够用（默认就是 F6 / F7）。
+
+实现上**不依附主窗口**搭建，而是建一个 `HWND_MESSAGE` 消息专用窗口来收
+`WM_HOTKEY`。这样主窗口最小化到托盘、甚至 `hide()` 之后，热键依然有效——
+热键失效是最容易让人以为"程序挂了"的问题。
+
 ## 5. 配置格式（与原版兼容）
 
 `config/config.json` 结构：
@@ -184,25 +203,40 @@ AutoClickerQt/
 - [x] `CMakeLists.txt`（Qt6，WIN32 无控制台，自动拷贝运行时 DLL）
 - [x] `utils/app_paths` —— 数据目录与资源路径
 - [x] `utils/logger` —— 按日期分文件日志 + 全局异常兜底
-- [x] `main.cpp` 初始化骨架（占位窗口，验证资源与日志链路）
+- [x] `utils/config_manager` —— 配置读写、默认值逐层合并、不写 HWND
+- [x] `core/click_engine` —— Win32 输入模拟、窗口枚举、循环调度
+- [x] `core/hotkey_listener` —— 全局热键（Win32 `RegisterHotKey`）
+- [x] `ui/styles` —— Catppuccin Mocha / Latte 两套 QSS（与 Python 版逐字节一致）
+- [x] `ui/action_editor` —— 动作编辑对话框 + `KeyCaptureEdit` 热键捕获框
+- [x] `ui/process_picker` —— 进程选择对话框
+- [x] `ui/main_window` —— 主窗口（可滚动内容区 + 常驻底部控制栏）
+- [x] `main.cpp` —— 真正启动 `MainWindow`，读取配置主题后套用 QSS
+- [x] `README.md` —— 面向使用者的文档
+- [x] `script/package.ps1` + `package.sh` + `package.cmd` —— 三脚本配套打包
 - [x] `.gitignore` / `.gitattributes`
 
-### 待办（按依赖顺序）
+### 待办
 
-- [ ] `utils/config_manager` —— 配置读写、默认值合并
-- [ ] `core/click_engine` —— Win32 输入模拟、窗口枚举、循环调度
-- [ ] `core/hotkey_listener` —— 全局热键（`RegisterHotKey` 或低级键盘钩子）
-- [ ] `ui/styles` —— Catppuccin Mocha / Latte 两套 QSS
-- [ ] `ui/action_editor` —— 动作编辑对话框、热键捕获输入框
-- [ ] `ui/process_picker` —— 进程选择对话框
-- [ ] `ui/main_window` —— 主窗口（可滚动内容区 + 常驻底部控制栏）
-- [ ] 编译验证与真机冒烟
-- [ ] README.md 与打包脚本
+- [ ] **编译验证**（等 Qt6 装好）与真机冒烟
+- [ ] 首选项里的 `start_minimized` / `high_precision` 目前仍未接线
+      （原版也是僵尸字段，保持了行为一致；要接就在 `main.cpp` 里加）
 
-### 依赖待办
+### 验证方式（不依赖 Qt，已做过）
 
-- **Qt6 SDK 尚未安装**（原版机器上也没有）。用户自己装。
-  装好后需要设置 `CMAKE_PREFIX_PATH` 指向 Qt6 安装目录再 configure。
+移植过程中写了一批**纯 Win32 验证程序**（放在
+`E:\temp\DeepSeekHarness\workspace\.agent-cache\scripts\`），
+用 `g++ -std=c++17 -O2 x.cpp -luser32 -lgdi32` 单独编译运行，
+把 `core/` 里不依赖 Qt 的那部分逻辑原样复刻过去对照：
+
+| 脚本 | 覆盖内容 | 结果 |
+| --- | --- | --- |
+| `wintest.cpp` | 键名映射、wParam 构造、lParam 打包、窗口枚举、进程分组 | 42/42 PASS |
+| `clienttest.cpp` / `clienttest3.cpp` / `clientfinal.cpp` | 客户区尺寸三种算法对比、最小化反推 | PASS 5 / FAIL 0 |
+| `hotkeytest.cpp` | 热键解析、`RegisterHotKey`、冲突检测、注销重注册 | 21/21 PASS |
+
+**这是它比"写完直接等编译"更可靠的地方**：窗口枚举、消息构造、客户区计算
+这些最容易写错的部分，在没有 Qt 的环境里就已经跑通了。
+
 
 ## 7. 环境
 
@@ -246,10 +280,80 @@ CLion 生成过 `cmake-build-debug/` 之后，即使后来装好 Qt，旧缓存�
 
 | 问题 | 原版表现 | 本版处理 |
 | --- | --- | --- |
-| `SendInput` 不检查返回值 | 被 UIPI 拦截时静默失败 | 检查返回值，失败记日志 |
-| `get_client_size` 写死边框补偿（-16/-46） | 高 DPI 下坐标偏移 | 用 `DwmGetWindowAttribute` 或 `AdjustWindowRectEx` |
-| 全局热键需管理员权限 | 非管理员时静默失效 | 启动时检测并提示 |
+| `SendInput` 不检查返回值 | 被 UIPI 拦截时静默失败 | 已检查返回值，失败记日志 |
+| `get_client_size` 写死边框补偿（-16/-46） | 高 DPI 下坐标偏移 | 已改为 `AdjustWindowRectEx` 反推，实测精确 |
+| 全局热键需管理员权限 | 非管理员时静默失效 | 改用 `RegisterHotKey`，普通权限即可 |
 | 工作线程异常不进日志 | 线程静默死掉 | 全局异常兜底 + 线程内 try/catch |
+
+### 9.4 客户区尺寸：三种算法的实测反转（重要）
+
+原版写死 `-16 / -46`。移植时想当然以为 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`
+最准，**实测证明相反**，过程值得记下来：
+
+一批真实窗口的客户区对比（真实值 vs 各算法推出值）：
+
+| 算法 | 结果 |
+| --- | --- |
+| 写死 `-16 / -46` | 纵向差 31–38px |
+| `DwmGetWindowAttribute` | 带标题栏窗口误差 ≤2px，**看起来最准** |
+| `AdjustWindowRectEx` | 差 24–31px |
+
+乍看 DWM 赢了。但 `clientSize()` 只在**客户区为 0（即最小化）**时才走反推分支，
+于是专门测最小化场景（自建 830×620 窗口）：
+
+| 算法 | 最小化窗口推出值 | 真实 814×581 |
+| --- | --- | --- |
+| 写死 `-16 / -46` | 814×574 | 纵向差 7 |
+| **`AdjustWindowRectEx`** | **814×581** | **精确** |
+| `DwmGetWindowAttribute` | 684×592 | 横向差 130 |
+
+根因：**DWM 对最小化窗口返回的是屏幕外的占位小矩形**
+（实测微信最小化后 `DWM 扩展边框: 146x21 (at -31993,-32000)`，坐标是负的几万）。
+而这个分支本来就只在最小化时才会执行 —— 所以 DWM 在这里永远拿不到可用值。
+
+**结论：用 `AdjustWindowRectEx`，不要用 DWM。**
+
+### 9.5 最小化窗口的 `GetClientRect` 会返回垃圾值
+
+修完算法顺序后仍有 1 个失败用例，定位到：**微信最小化后
+`GetClientRect` 返回 144×20，而不是 0**。垃圾值被当成"有效客户区"直接返回，
+把整条反推分支绕过去了。
+
+**修法：`GetClientRect` 之前先 `!::IsIconic(h)` 判断。**
+判断顺序比算法本身更容易错，这类"前提条件"要写在代码注释里。
+
+### 9.6 三脚本的产物自检必须按"产物归属"分流
+
+打包脚本启动时会先判断 `dist/` 里有没有最新产物。第一版把 `dist/` 里所有
+`*.exe` / `*.zip` / `*.tar.gz` 一视同仁地跟源码比 mtime，结果两个脚本永远报"过期"：
+
+- `package.ps1` 打不出 `*.tar.gz`（那是 `package.sh` 的产物），
+- `package.sh` 在非 Windows 上打不出 `*.exe`（那是 `package.ps1` 的产物）。
+
+不属于自己的产物永远比自己"新"不了，所以结论永远是「该重打了」。
+自检一旦永远报警，就等于没有自检 —— 没人会再去看它。
+
+**修法**：先按文件名分流归属，别人的产物标 `[跳过]` 且不参与判定；
+再判断日期戳是不是今天的，不是则标 `[归档]`。两道过滤之后才算 mtime。
+
+**推论（比修法更重要）**：三个脚本的判定逻辑是各写各的（PowerShell / bash /
+cmd 包装），任何一侧改了规则，另外两侧必须同步改，并且**跑一遍对比退出码**。
+当前验收方式：`-CheckOnly` / `--check-only` 对同一份 `dist/` 必须返回相同退出码
+和相同的结论行。这是我在 Python 版项目里真踩过的坑，那次就花了三轮才对上。
+
+### 9.7 Windows 批处理与 PowerShell 文件的编码
+
+`.ps1` 必须 **UTF-8 带 BOM + CRLF**：没有 BOM 时 PowerShell 5.1 按本地代码页
+（中文系统 = GBK）解码，中文注释全变乱码，然后报一堆假语法错误
+（`Unexpected token`、`The hash literal was incomplete`），跟真实错误毫无关系。
+
+`.cmd` 必须 **GBK + CRLF**，且**不要在文件里中途 `chcp 65001`**：
+cmd 是按当前代码页逐字节读批处理的，中途切码页会让后半段文字按旧码页解释而花掉。
+
+`.sh` 必须 **LF**（`CR` 计数为 0），否则 Linux 上会报 `$'\r': command not found`。
+
+`.gitattributes` 里已经按扩展名钉死了这三类，`git add --renormalize` 之后
+就不会再混进来。
 
 ---
 

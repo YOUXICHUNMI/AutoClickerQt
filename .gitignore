@@ -1,62 +1,30 @@
-# 构建产物
+# ---- 构建产物 ----
 build/
 build-*/
 cmake-build-*/
-cmake-build-*/**
 out/
-
-# CMake 缓存与生成物
-CMakeCache.txt
-CMakeFiles/
-CMakeUserPresets.json
-cmake_install.cmake
-Makefile
-*.ninja
-.ninja_deps
-.ninja_log
-compile_commands.json
-CTestTestfile.cmake
-
-# Qt / moc / uic / rcc 中间产物
-moc_*.cpp
-moc_*.h
-qrc_*.cpp
-ui_*.h
-*.moc
-*.obj
 *.o
-*.pdb
-*.ilk
-*.exp
+*.obj
 
-# 可执行文件与库
-*.exe
-*.dll
-*.so
-*.so.*
-*.dylib
-*.a
-*.lib
+# ---- 打包产物 ----
+dist/
 
-# 运行期数据（config/ 与 log/，见 utils/app_paths.h）
-config/
-log/
-
-# IDE（CLion 的配置是个人环境相关，不入库）
+# ---- IDE ----
 .idea/
-*.iml
 .vscode/
 *.user
 *.user.*
-CLion*.xml
 
-# 系统
+# ---- 运行期数据（配置与日志，不进仓库）----
+config/
+log/
+
+# ---- 系统垃圾 ----
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# 临时文件
-*.tmp
-*.bak
-*.swp
-*~
+# ---- CMake ----
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json

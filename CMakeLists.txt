@@ -27,8 +27,26 @@ set(PROJECT_SOURCES
         # utils
         utils/app_paths.cpp
         utils/app_paths.h
+        utils/config_manager.cpp
+        utils/config_manager.h
         utils/logger.cpp
         utils/logger.h
+
+        # core
+        core/click_engine.cpp
+        core/click_engine.h
+        core/hotkey_listener.cpp
+        core/hotkey_listener.h
+
+        # ui
+        ui/styles.cpp
+        ui/styles.h
+        ui/action_editor.cpp
+        ui/action_editor.h
+        ui/process_picker.cpp
+        ui/process_picker.h
+        ui/main_window.cpp
+        ui/main_window.h
 )
 
 set(PROJECT_RESOURCES
@@ -44,6 +62,8 @@ qt_add_executable(AutoClickerQt
 target_include_directories(AutoClickerQt PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/utils
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/ui
 )
 
 target_link_libraries(AutoClickerQt PRIVATE
