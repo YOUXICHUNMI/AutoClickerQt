@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>static/Ralsei.png</file>
+        <file>static/Ralsei_Run.gif</file>
+        <file>static/Ralsei.ico</file>
+    </qresource>
+</RCC>

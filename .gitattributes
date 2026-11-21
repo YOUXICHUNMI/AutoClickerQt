@@ -1,0 +1,40 @@
+# 统一换行与文本判定，避免 Windows 与 Linux 检出差异。
+# 本文件里显式写出的规则优先级高于 core.autocrlf。
+
+* text=auto eol=lf
+
+# 源码与文本
+*.cpp   text eol=lf
+*.cc    text eol=lf
+*.cxx   text eol=lf
+*.h     text eol=lf
+*.hpp   text eol=lf
+*.ui    text eol=lf
+*.qrc   text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+CMakeLists.txt text eol=lf
+*.cmake text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+
+# Windows 脚本保持 CRLF，否则 cmd 解析会出错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Shell 脚本必须 LF，否则 Linux 上 $'\r' 报错
+*.sh text eol=lf
+
+# 二进制资源
+*.png binary
+*.gif binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.exe binary
+*.dll binary
+*.zip binary
