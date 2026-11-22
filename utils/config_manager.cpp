@@ -85,6 +85,7 @@ Profile profileFromJson(const QJsonObject &obj) {
     p.enabled = obj.value(QStringLiteral("enabled")).toBool(p.enabled);
     p.targetMode = obj.value(QStringLiteral("target_mode")).toString(p.targetMode);
     p.targetTitle = obj.value(QStringLiteral("target_title")).toString(p.targetTitle);
+    p.targetExe = obj.value(QStringLiteral("target_exe")).toString(p.targetExe);
     p.clickX = obj.value(QStringLiteral("click_x")).toDouble(p.clickX);
     p.clickY = obj.value(QStringLiteral("click_y")).toDouble(p.clickY);
     return p;
@@ -108,6 +109,7 @@ QJsonObject profileToJson(const Profile &p) {
     obj.insert(QStringLiteral("enabled"), p.enabled);
     obj.insert(QStringLiteral("target_mode"), p.targetMode);
     obj.insert(QStringLiteral("target_title"), p.targetTitle);
+    obj.insert(QStringLiteral("target_exe"), p.targetExe);
     obj.insert(QStringLiteral("click_x"), p.clickX);
     obj.insert(QStringLiteral("click_y"), p.clickY);
 

@@ -53,6 +53,11 @@ namespace {
 // 否则下次按标题查找会失败。与 Python 版的 TITLE_ROLE 对应。
 constexpr int kTitleRole = Qt::UserRole + 1;
 
+// 列表项里存"进程可执行文件名"（例如 chrome.exe）的 role。
+// 光靠标题恢复目标窗口不可靠：浏览器切页面、记事本换文件都会改标题，
+// 进程名则在程序重启后依然一致。
+constexpr int kExeRole = Qt::UserRole + 2;
+
 // 动作类型的中文显示与存储值互转
 QString actionTypeToText(const QString &type) {
     if (type == QLatin1String("mouse")) return QStringLiteral("鼠标");
@@ -631,17 +636,19 @@ void MainWindow::loadActiveProfileToUi() {
     m_startHotkeyEdit->setText(p.startHotkey);
     m_stopHotkeyEdit->setText(p.stopHotkey);
 
+    // 坐标必须在切目标模式之前回填。
+    // onTargetModeChanged() 末尾会调 autoSaveProfile()，那时如果坐标框还是
+    // 默认的 50/50，就会把磁盘上刚读出来的真实值覆盖掉 —— 表现为
+    // 「重启后坐标永远是 50%」，这是个真实修过的 bug。
+    m_clickXSpin->setValue(p.clickX * 100.0);
+    m_clickYSpin->setValue(p.clickY * 100.0);
+
     const int modeIdx = m_targetModeCombo->findData(p.targetMode);
     m_targetModeCombo->setCurrentIndex(modeIdx >= 0 ? modeIdx : 0);
     m_buildingUi = false;
 
     // 目标模式切换要真的执行一次，才能把窗口列表/控件可用性摆对
     onTargetModeChanged(m_targetModeCombo->currentIndex());
-
-    m_buildingUi = true;
-    m_clickXSpin->setValue(p.clickX * 100.0);
-    m_clickYSpin->setValue(p.clickY * 100.0);
-    m_buildingUi = false;
 
     refreshActionTable();
 }
@@ -678,7 +685,16 @@ void MainWindow::refreshActionTable() {
 
 void MainWindow::refreshWindows() {
     m_buildingUi = true;
-    const QString savedTitle = m_windowCombo->currentData(kTitleRole).toString();
+
+    // 刷新前记住当前选中项的标题与进程名，刷新后按它们找回
+    QString savedTitle = m_windowCombo->currentData(kTitleRole).toString();
+    QString savedExe = m_windowCombo->currentData(kExeRole).toString();
+    if (savedTitle.isEmpty() && savedExe.isEmpty()) {
+        // 下拉框还没选中过任何东西（例如刚启动），用配置里记的
+        savedTitle = m_config.activeProfile().targetTitle;
+        savedExe = m_config.activeProfile().targetExe;
+    }
+
     m_windowCombo->clear();
 
     const QList<ClickEngineApi::WindowInfo> windows = ClickEngineApi::enumWindowsDetail();
@@ -690,21 +706,75 @@ void MainWindow::refreshWindows() {
         const int idx = m_windowCombo->count() - 1;
         m_windowCombo->setItemData(idx, QVariant::fromValue<qulonglong>(w.hwnd));
         m_windowCombo->setItemData(idx, w.title, kTitleRole);
+        m_windowCombo->setItemData(idx, w.procName, kExeRole);
     }
 
-    // 尽量恢复之前选中的窗口
-    if (!savedTitle.isEmpty()) {
-        for (int i = 0; i < m_windowCombo->count(); ++i) {
-            if (m_windowCombo->itemData(i, kTitleRole).toString() == savedTitle) {
-                m_windowCombo->setCurrentIndex(i);
-                break;
-            }
-        }
-    }
     m_buildingUi = false;
+
+    selectWindowByHint(savedTitle, savedExe);
 
     qCInfo(lcMain).noquote() << QStringLiteral("窗口列表已刷新，共 %1 个窗口").arg(windows.size());
     updatePixelDisplay();
+}
+
+bool MainWindow::selectWindowByHint(const QString &title, const QString &exe) {
+    if (title.isEmpty() && exe.isEmpty()) {
+        return false;
+    }
+
+    const bool prev = m_buildingUi;
+    m_buildingUi = true;
+
+    auto pick = [this](int index) {
+        m_windowCombo->setCurrentIndex(index);
+    };
+
+    // 1. 进程名与标题都相同：程序没重启，只是重进了界面
+    if (!exe.isEmpty() && !title.isEmpty()) {
+        for (int i = 0; i < m_windowCombo->count(); ++i) {
+            if (m_windowCombo->itemData(i, kExeRole).toString() == exe &&
+                m_windowCombo->itemData(i, kTitleRole).toString() == title) {
+                pick(i);
+                m_buildingUi = prev;
+                return true;
+            }
+        }
+    }
+
+    // 2. 只有进程名相同：程序重启过，标题已经变了。
+    //    同名进程可能有多个实例（开了两个记事本），优先选能通过 isWindow 校验的，
+    //    列表本身只含有窗口的项，所以直接取第一个即可。
+    if (!exe.isEmpty()) {
+        for (int i = 0; i < m_windowCombo->count(); ++i) {
+            if (m_windowCombo->itemData(i, kExeRole).toString() == exe) {
+                pick(i);
+                m_buildingUi = prev;
+                return true;
+            }
+        }
+    }
+
+    // 3. 标题完全相同（老配置没有 target_exe 时走这里）
+    if (!title.isEmpty()) {
+        for (int i = 0; i < m_windowCombo->count(); ++i) {
+            if (m_windowCombo->itemData(i, kTitleRole).toString() == title) {
+                pick(i);
+                m_buildingUi = prev;
+                return true;
+            }
+        }
+
+        // 4. 标题包含（标题带了状态后缀，例如 " - 记事本" 之类）
+        const int idx = m_windowCombo->findText(title, Qt::MatchContains);
+        if (idx >= 0) {
+            pick(idx);
+            m_buildingUi = prev;
+            return true;
+        }
+    }
+
+    m_buildingUi = prev;
+    return false;
 }
 
 // ============================================================================
@@ -743,8 +813,10 @@ void MainWindow::autoSaveProfile() {
     if (m_windowCombo->isEnabled() && m_windowCombo->currentIndex() >= 0) {
         const QString rawTitle = m_windowCombo->currentData(kTitleRole).toString();
         p->targetTitle = rawTitle.isEmpty() ? m_windowCombo->currentText() : rawTitle;
+        p->targetExe = m_windowCombo->currentData(kExeRole).toString();
     } else {
         p->targetTitle.clear();
+        p->targetExe.clear();
     }
 
     p->clickX = m_clickXSpin->value() / 100.0;
@@ -938,33 +1010,9 @@ void MainWindow::onTargetModeChanged(int index) {
     m_pickCoordBtn->setEnabled(isBackground);
 
     if (isBackground) {
+        // refreshWindows 内部已经会按当前选中/配置里的 title+exe 找回目标，
+        // 所以这里不再重复一遍匹配逻辑。
         refreshWindows();
-
-        // 按 TITLE_ROLE 精确恢复上次选中的窗口
-        const Profile &p = m_config.activeProfile();
-        if (!p.targetTitle.isEmpty()) {
-            bool found = false;
-            for (int i = 0; i < m_windowCombo->count(); ++i) {
-                if (m_windowCombo->itemData(i, kTitleRole).toString() == p.targetTitle) {
-                    const bool prev = m_buildingUi;
-                    m_buildingUi = true;
-                    m_windowCombo->setCurrentIndex(i);
-                    m_buildingUi = prev;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                // 精确匹配不到时退一步做包含匹配（窗口标题可能带状态后缀）
-                const int idx = m_windowCombo->findText(p.targetTitle, Qt::MatchContains);
-                if (idx >= 0) {
-                    const bool prev = m_buildingUi;
-                    m_buildingUi = true;
-                    m_windowCombo->setCurrentIndex(idx);
-                    m_buildingUi = prev;
-                }
-            }
-        }
         updatePixelDisplay();
     } else {
         m_pixelLabel->clear();
@@ -1037,6 +1085,7 @@ void MainWindow::onPickProcess() {
         found = m_windowCombo->count() - 1;
         m_windowCombo->setItemData(found, QVariant::fromValue<qulonglong>(hwnd));
         m_windowCombo->setItemData(found, title, kTitleRole);
+        m_windowCombo->setItemData(found, procName, kExeRole);
     }
     m_windowCombo->setCurrentIndex(found);
     m_buildingUi = prev;
@@ -1163,6 +1212,7 @@ void MainWindow::onPickTimer() {
                 found = m_windowCombo->count() - 1;
                 m_windowCombo->setItemData(found, QVariant::fromValue<qulonglong>(target.hwnd));
                 m_windowCombo->setItemData(found, title, kTitleRole);
+                m_windowCombo->setItemData(found, procName, kExeRole);
             }
             m_windowCombo->setCurrentIndex(found);
             m_buildingUi = prev;
@@ -1235,6 +1285,17 @@ void MainWindow::onStart() {
         }
         if (targetHwnd == 0 || !ClickEngineApi::isWindow(targetHwnd)) {
             targetHwnd = ClickEngineApi::findWindowByTitle(p->targetTitle);
+        }
+        // 标题找不回来（程序重启过、或标题变了）时按进程名兜底，
+        // 这样「上次连的是哪个程序」在重进之后依然有效。
+        if (targetHwnd == 0 && !p->targetExe.isEmpty()) {
+            const QList<ClickEngineApi::WindowInfo> all = ClickEngineApi::enumWindowsDetail();
+            for (const auto &w : all) {
+                if (w.procName.compare(p->targetExe, Qt::CaseInsensitive) == 0) {
+                    targetHwnd = w.hwnd;
+                    break;
+                }
+            }
         }
         if (targetHwnd == 0) {
             QMessageBox::warning(

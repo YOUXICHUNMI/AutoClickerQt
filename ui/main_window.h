@@ -95,6 +95,15 @@ private:
     void loadActiveProfileToUi();
     void refreshActionTable();
     void refreshWindows();
+    // 在窗口下拉框里按「进程名 + 标题」找回上次选中的目标。
+    //
+    // 恢复顺序（越靠前越可信）：
+    //   1. 进程名与标题都相同      —— 程序没重启，只是重进了界面
+    //   2. 进程名相同              —— 程序重启过，标题变了；同名进程里优先有窗口的
+    //   3. 标题完全相同            —— 老配置没有 target_exe，兼容用
+    //   4. 标题包含                —— 标题带了状态后缀
+    // 全都失败就保持当前选中不动。返回是否成功选中。
+    bool selectWindowByHint(const QString &title, const QString &exe);
     void updatePixelDisplay();
     void registerHotkeys();
 

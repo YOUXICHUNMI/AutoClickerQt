@@ -38,6 +38,13 @@ struct Profile {
     bool enabled = true;
     QString targetMode = QStringLiteral("foreground"); // foreground / background
     QString targetTitle;   // 目标窗口标题（持久化，HWND 不持久化）
+    // 目标进程的可执行文件名，例如 "chrome.exe"。
+    //
+    // 为什么要连进程名一起存：窗口标题是会变的（浏览器切页面、
+    // 记事本打开别的文件都会改标题），只按标题恢复经常找不回来；
+    // 而进程名在程序重新启动后依然一致。恢复顺序见
+    // MainWindow::selectWindowByHint()。
+    QString targetExe;
     double clickX = 0.5;   // 相对客户区的比例 0..1
     double clickY = 0.5;
 };

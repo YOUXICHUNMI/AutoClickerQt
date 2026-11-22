@@ -125,7 +125,10 @@ AutoClicker/
 于是句柄被间接落盘了。
 
 **本项目的规则**：`ConfigManager::save()` 之前必须剔除 `target_hwnd`，
-目标窗口只按 `target_title` 持久化，启动时重新按标题查找。
+目标窗口按 `target_title` + `target_exe` 一起持久化，启动时重新查找
+（顺序见 `MainWindow::selectWindowByHint()`）。
+只靠标题不够：标题会变（浏览器切页面、记事本换文件、程序重启），
+进程名则一直在。
 
 ### 4.7 全局热键用 RegisterHotKey 而不是键盘钩子
 
@@ -172,6 +175,7 @@ Qt 版在 Windows 上改用 Win32 `RegisterHotKey`：
       "enabled": true,
       "target_mode": "foreground",
       "target_title": "",
+      "target_exe": "",
       "click_x": 0.5,
       "click_y": 0.5
     }
@@ -192,6 +196,10 @@ Qt 版在 Windows 上改用 Win32 `RegisterHotKey`：
   `hold` 时 `hold_duration` 秒；**`hold_duration <= 0` 表示"一直按"，直到停止**。
   这是原版一个容易被忽略的语义，务必保留。
 - `click_x` / `click_y` 都是 0–1 的相对比例，相对**客户区**，不是屏幕坐标。
+- `target_title` / `target_exe` 一起决定「重进后选回哪个窗口」，恢复顺序见
+  `MainWindow::selectWindowByHint()`：进程名+标题 → 只有进程名 → 标题精确 → 标题包含。
+  只存标题不够——浏览器切页面、记事本换文件都会改标题；进程名在程序重启后依然一致。
+  `target_exe` 是 2026-11-22 新增的字段，老配置里没有它时会自动降到第 3 级匹配。
 - `theme`：`dark` / `light` / `auto`。
 
 ## 6. 移植进度
@@ -742,6 +750,35 @@ stash 回 `std::thread` 版第 1 轮就 `EXIT=3`。
 `engine_start=4 engine_stop=5 QThreadStorage_hits=0`。
 **注意 `INPUT` 结构体在 64 位下必须显式 40 字节**（`[StructLayout(LayoutKind.Explicit, Size=40)]`），
 默认顺序布局算出 32 字节会让 `SendInput` 静默失败、热键永不触发。
+
+### 9.17 目标进程持久化：只存标题不够，要连进程名一起存
+
+用户 2026-11-22 问「能否保存选择的进程，保证重进后依旧是那个进程和位置？」。
+原实现只存 `target_title`，有三个真实缺陷：
+
+1. **标题会变**——浏览器切页面、记事本打开别的文件都会改标题，按标题找不回来。
+2. **同名窗口分不清**——开两个记事本都叫 `无标题 - 记事本`。
+3. **目标程序重启后标题变了**——恢复时找不到，退化成空选中。
+
+改法：`Profile` 新增 `targetExe`（落盘键 `target_exe`，例如 `powershell.exe`），
+恢复逻辑抽成 `MainWindow::selectWindowByHint(title, exe)` 四级：
+进程名+标题 → 只有进程名 → 标题精确 → 标题包含。窗口下拉框每项用
+`kExeRole = Qt::UserRole + 2` 存进程名。`onStart()` 里原本「按标题找不到就回退前台模式」
+的地方，也补了一层「按 `targetExe` 遍历 `enumWindowsDetail()` 兜底」。
+
+**顺带挖出一个真 bug（坐标恢复不了）**：`loadActiveProfileToUi()` 原来先设
+`targetMode` → `onTargetModeChanged()`（末尾会调 `autoSaveProfile()`）→ **之后**才回填
+`clickXSpin/clickYSpin`。于是 autoSaveProfile 把仍是默认 50/50 的坐标写回磁盘，
+覆盖掉刚读出来的真实值——**表现为「重启后坐标永远是 50%」**。
+修法是把坐标回填提到设 targetMode **之前**。
+
+验证：`scripts/persist-probe/`（独立 CMake 工程，链项目真实源码，连开三个
+`MainWindow` 模拟「设置 → 重进 → 标题变了再重进」），**22 PASS / 0 FAIL**；
+真实 exe 冒烟也验过：预置一个不存在的 `target_title` + 正确的 `target_exe`，
+启动后成功找回 `powershell.exe` 并把真实标题写回配置，坐标 0.235/0.71 原样保留。
+
+> 探针注意：从 DSH 工作区内跑会因 exe 继承 Low Mandatory Level 而写不了
+> `E:\temp\...`（见 9.12），要先把 exe 拷到工作区外再跑。
 
 ---
 
