@@ -1,9 +1,11 @@
 #include "click_engine.h"
 
 #include <QDebug>
+#include <QDeadlineTimer>
 #include <QDir>
 #include <QHash>
 #include <QSet>
+#include <QThread>
 #include <QtGlobal>
 
 #include <algorithm>
@@ -593,6 +595,31 @@ bool ClickEngine::start(const Profile &profile, QString *errorOut, quintptr targ
         return false;
     }
 
+    // 上一次的线程对象可能还留着：引擎跑完（达到重复次数、或全是"一直按"）
+    // 只是让 runLoop 自然返回，线程对象本身还在。先收干净再起新的。
+    //
+    // 这一步是必须的：原来的 std::thread 版本在这里会直接崩溃 ——
+    //   terminate called without an active exception
+    // 因为对「已经自然结束但还没 join」的 std::thread 做移动赋值，标准要求
+    // 调用 std::terminate。用户看到的现象是"连点跑完一轮后再点开始，程序没了"。
+    // （已用 A/B 探针实测复现：std::thread 版第 2 轮必崩，QThread 版连跑 4 轮正常）
+    //
+    // 放在 m_running.store(true) 之前，这样提前 return 不会把状态位留在"运行中"。
+    if (m_thread) {
+        if (m_thread->isRunning()) {
+            m_thread->wait(QDeadlineTimer(3000));
+        }
+        if (m_thread->isRunning()) {
+            // 还没停下来的线程不能删（QThread 析构时会断言/崩溃），放弃这次启动。
+            if (errorOut) {
+                *errorOut = QStringLiteral("上一次连点还没停下来，请稍后再试");
+            }
+            return false;
+        }
+        delete m_thread;
+        m_thread = nullptr;
+    }
+
     m_profile = profile;
     m_clickX = qBound(0.0, profile.clickX, 1.0);
     m_clickY = qBound(0.0, profile.clickY, 1.0);
@@ -630,12 +657,14 @@ bool ClickEngine::start(const Profile &profile, QString *errorOut, quintptr targ
                              .arg(m_profile.repeat == 0 ? QStringLiteral("无限")
                                                         : QString::number(m_profile.repeat));
 
-    m_thread = std::thread([this] { runLoop(); });
+    m_thread = QThread::create([this] { runLoop(); });
+    m_thread->setObjectName(QStringLiteral("click-engine"));
+    m_thread->start();
     return true;
 }
 
 void ClickEngine::stop() {
-    if (!m_running.load() && !m_thread.joinable()) {
+    if (!m_running.load() && !m_thread) {
         return;
     }
     m_stopRequested.store(true);
@@ -644,19 +673,17 @@ void ClickEngine::stop() {
 }
 
 void ClickEngine::waitForStop(int timeoutMs) {
-    if (!m_thread.joinable()) {
+    if (!m_thread) {
         return;
     }
-    // 简单等待：轮询线程可 join 状态（std::thread 没有带超时的 join）
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (m_stopRequested.load() && !m_running.load()) {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // QThread::wait 自带超时（Qt6 用 QDeadlineTimer），这里直接等；循环体里每轮
+    // 都会检查 m_stopRequested，所以正常情况下几毫秒就返回。
+    if (m_thread->isRunning()) {
+        m_thread->wait(QDeadlineTimer(timeoutMs));
     }
-    if (m_thread.joinable()) {
-        m_thread.join();
+    if (!m_thread->isRunning()) {
+        delete m_thread;
+        m_thread = nullptr;
     }
 }
 

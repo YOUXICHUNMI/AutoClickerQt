@@ -177,6 +177,31 @@ dist/
 > `E:\Qt\Tools\CMake_64\bin\cmake.exe`，并在没设 `CMAKE_PREFIX_PATH` 时自动探测
 > `E:\Qt\6.*\mingw_64`。
 
+### 直接从 cmake 打包（不用记脚本参数）
+
+打包已经接进构建系统了，`CMakeLists.txt` 里注册了四个 target：
+
+| 命令 | 做什么 | 耗时 |
+| --- | --- | --- |
+| `cmake --build build/release --target deploy` | 只跑 `windeployqt` 把 exe + DLL 铺到 `dist/`，不压缩 | 几秒 |
+| `cmake --build build/release --target package` | 默认两种形态都出（绿色目录 zip + 单文件 exe） | 十几秒 |
+| `cmake --build build/release --target package-green` | 只出绿色目录 zip | 十几秒 |
+| `cmake --build build/release --target package-single` | 只出单文件 exe（需要 Enigma Virtual Box） | 十几秒 |
+
+- 四个 target 都自动 `DEPENDS AutoClicker`，改了源码直接跑就会先增量编译再打包。
+- 它们不是重写一套逻辑，而是转调 `script/package.ps1`——`windeployqt` 参数、
+  dxcompiler 排除、`qgif.dll` 补全、EnigmaVB 调用这些细节只在脚本里维护一份。
+- 版本号从 `project(... VERSION 1.0.0 ...)` 自动带过去，改 CMakeLists 一处即可。
+- 不想注册这些 target 时配置 `-DAUTOCLICKER_ENABLE_PACKAGE=OFF`。
+- 非 Windows 平台只注册 `deploy`（拷二进制到 `dist/`）和 `package`（打
+  `AutoClicker_<版本>_linux64.tar.gz`），运行时依赖由系统或 CI 提供。
+
+```powershell
+# 典型用法：改完代码一条命令出全套
+cmake --build build/release --target package
+```
+
+
 ### exe 的图标与版本信息
 
 两种形态的 exe 都带 **Ralsei 图标**和完整的版本信息，右键「属性 → 详细信息」能看到：

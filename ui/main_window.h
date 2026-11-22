@@ -38,6 +38,8 @@ public:
 protected:
     void closeEvent(QCloseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    // 首次显示时窗口才真正归属某个屏幕，这里再校正一次尺寸/位置。
+    void showEvent(QShowEvent *event) override;
 
 private slots:
     // 配置
@@ -85,6 +87,8 @@ private:
     void buildTray();
     void connectSignals();
     void applyDefaultSize();
+    // 把窗口夹回当前屏幕的可用区域内（四个方向都夹）。
+    void clampToScreen();
 
     void loadProfilesToUi();
     void loadThemeToUi();
@@ -100,6 +104,9 @@ private:
 
     // UI 构建过程中抑制信号回调（对应 Python 的 _building_ui）
     bool m_buildingUi = false;
+
+    // 首次 showEvent 时再校正一次窗口尺寸/位置（构造阶段拿不到正确的屏幕 DPR）
+    bool m_firstShow = true;
 
     // 坐标拾取状态机：0 = 等待松开初始点击，1 = 等待新点击
     bool m_picking = false;

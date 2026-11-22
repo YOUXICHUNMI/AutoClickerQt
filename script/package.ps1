@@ -882,15 +882,17 @@ try {
     if (Test-Path $DistDir) { Remove-Item $DistDir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
-    if ($wantGreen) {
-        $greenDir = if ($bothForms) { $GreenStageDir } else { $DistDir }
-        if (Test-Path $greenDir) { Remove-Item $greenDir -Recurse -Force }
-        Invoke-Deploy -Qt $qt -Dir $BuildDir -TargetDir $greenDir
+    # 收集运行时依赖这一步两种形态都需要：
+    #   - 只有绿色目录   → 直接铺到 dist\，就地压 zip
+    #   - 只有单文件     → 也要先铺到 dist\，EVB 才有东西可嵌
+    #   - 两种都要       → 先铺到 build\green\，压完 zip 再复制一份到 dist\ 给 EVB
+    $greenDir = if ($bothForms) { $GreenStageDir } else { $DistDir }
+    if (Test-Path $greenDir) { Remove-Item $greenDir -Recurse -Force }
+    Invoke-Deploy -Qt $qt -Dir $BuildDir -TargetDir $greenDir
 
-        $zip = $null
-        if (-not $SkipZip) {
-            $zip = Invoke-Package -Ver $Version -SourceDir $greenDir
-        }
+    $zip = $null
+    if ($wantGreen -and (-not $SkipZip)) {
+        $zip = Invoke-Package -Ver $Version -SourceDir $greenDir
     }
 
     if ($wantSingle) {

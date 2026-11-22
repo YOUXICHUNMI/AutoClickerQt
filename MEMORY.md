@@ -214,6 +214,10 @@ Qt 版在 Windows 上改用 Win32 `RegisterHotKey`：
 - [x] `README.md` —— 面向使用者的文档
 - [x] `script/package.ps1` + `package.sh` + `package.cmd` —— 三脚本配套打包
 - [x] `.gitignore` / `.gitattributes`
+- [x] `CMakeLists.txt` 注册 `deploy` / `package` / `package-green` / `package-single` 四个打包 target
+- [x] 引擎线程从 `std::thread` 换成 `QThread`（消除 QThreadStorage 警告 + 修掉重复启动崩溃）
+- [x] 双屏 DPR 差异导致的窗口尺寸失控（`applyDefaultSize` + `clampToScreen`）
+
 
 ### 待办
 
@@ -604,6 +608,110 @@ Add-Type -AssemblyName System.Drawing
 版本页都正常。
 
 ---
+
+### 9.14 打包接进 CMake：四个 target，但逻辑只有一份
+
+需求是「不用记脚本参数，`cmake --build --target xxx` 就能出包」。做法是在
+`CMakeLists.txt` 里注册四个 `add_custom_target`：`deploy` / `package` /
+`package-green` / `package-single`，全部 `DEPENDS AutoClicker`。
+
+**关键决策：target 里不重写打包逻辑，而是转调 `script/package.ps1`。**
+
+一开始想过在 CMake 里直接调 `windeployqt` + `Compress-Archive`，但脚本里已经压了
+一堆细节：排除 `--no-system-dxc-compiler` 省的 26 MB、补 `imageformats\qgif.dll`
+（Ralsei 动画要它）、校验 `platforms\qwindows.dll` 存在、EnigmaVB 的 .evb 生成、
+dist 先清空再铺（否则旧产物被当依赖嵌进去，单文件从 17 MB 涨到 34 MB）。
+两边各写一份迟早发散，所以 target 只负责「用正确的参数调脚本」。
+
+版本号从 `project(... VERSION 1.0.0 ...)` 自动带到 `-Version`，改一处即可。
+不要这些 target 时配置 `-DAUTOCLICKER_ENABLE_PACKAGE=OFF`。
+
+**踩到的坑：`package.ps1` 开头多了一个 `+`。**
+字节前 8 位是 `EF BB BF 2B 3C 23 0D 0A`（BOM 后面紧跟 `+<#`），PowerShell 报
+`Unexpected attribute 'CmdletBinding'.` / `Unexpected token 'param'`，整个文件
+无法解析。诡异的是 `git diff` 看不出差异——这个 `+` 是早期某次编辑混进去的，
+只是以前从没用 CMake target 调过它，所以一直没暴露。
+用 `[System.IO.File]::ReadAllBytes` 逐字节看才确认，删掉偏移 3 的 `0x2B` 即可。
+
+**第二个坑：`-SingleExe` 模式下 dist 里没有 exe 可嵌。**
+原主流程把 `Invoke-Deploy`（收集运行时依赖）锁在 `if ($wantGreen) {...}` 里，
+而 `-SingleExe` 恰好让 `$wantGreen = $false` → 报「dist\ 里没有 AutoClicker.exe」。
+修法是把 `Invoke-Deploy` 提到分支外无条件执行，只在 `$wantGreen` 时压 zip。
+
+---
+
+### 9.15 双屏 DPR 不同，窗口尺寸会被乘两遍
+
+这台机器是双屏，主屏 `HH246FV` 1920x1080 **DPR 1.00**，副屏
+`TL160ADMP11-0` 1707x1067 **DPR 1.50**。
+
+症状：约 1/3 概率启动后窗口变成 `1350x1392 at (1280,-151)` —— 右侧、底部、
+顶部全在屏幕外。数字对得上：`1350 = 900 × 1.5`、`1392 = 928 × 1.5`。
+
+**根因**：`applyDefaultSize()` 在构造函数里跑，此时窗口还没归属任何屏幕，
+`QApplication::primaryScreen()` 给的是主屏逻辑尺寸，但 Qt 内部按副屏的
+1.5 缩放因子又乘了一遍。
+
+修法三层：
+1. `applyDefaultSize()` 里屏幕选择顺序改成 `windowHandle()->screen()` →
+   `QGuiApplication::screenAt(QCursor::pos())` → `primaryScreen()`；
+   **删掉函数开头那句 `resize(820,720)`**（它会把错误 DPR 提前锁死）。
+2. 新增 `showEvent()`：首次显示时窗口才真正归属某块屏幕，这时再
+   `applyDefaultSize()` 一次。
+3. 抽出 `clampToScreen()`：四边都夹回 `avail`，**且窗口比屏幕还大时先缩小**。
+
+**只夹右下角是不够的**——实测出现过 `y = -151`，标题栏跑到屏幕外，
+用户看不见也拖不回来，等于窗口废了。必须四个方向都夹。
+
+**第二次夹的时机**：`showEvent` 里的 `frameGeometry()` 还没算上系统边框
+（实测差 16px），所以补一个 `QTimer::singleShot(0, this, [this]{ clampToScreen(); })`，
+在本轮事件循环末尾再夹一次，此时边框才是最终值。
+
+验证脚本 `scripts\geomcheck.ps1`：`PrintWindow` + `GetWindowRect` 判四边，
+修复前 `VERDICT: OVERFLOW`（右侧溢出 8px），修复后 `FIT`（`0,0 - 916,967`）。
+
+顺带把「进程列表点击后跳到中间」也解释掉了 —— 弹窗落在 DPR 1.5 的副屏时
+窗口自身尺寸/位置错乱，用户看到的是错觉。用 `QTest::mouseClick` 与
+**真实系统鼠标**（`SetCursorPos` + `mouse_event`）双重验证，命中测试全部正确。
+
+---
+
+### 9.16 引擎线程用 QThread，不用 std::thread
+
+症状：日志里出现
+`QThreadStorage: entry 1 destroyed before end of thread 0x...`，
+并且**跑完一轮再点开始，程序直接没了**（`terminate called without an active exception`）。
+
+两个问题的同一个根因：`std::thread` 创建的线程不是 Qt 的线程，Qt 的
+`QThreadStorage` / `QThreadData` 没机会在线程真正结束前清理；
+更严重的是 `repeat>0` 跑完后线程对象仍在且 joinable，下一轮
+`m_thread = std::thread(...)` 对 joinable 的 `std::thread` 移动赋值，
+标准要求直接 `std::terminate`。
+
+修法：`std::thread m_thread;` → `QThread *m_thread = nullptr;`，
+`start()` 里 `QThread::create(...)` + `setObjectName("click-engine")` + `start()`，
+`waitForStop()` 用 `m_thread->wait(QDeadlineTimer(ms))`。
+
+**两个必须注意的点**：
+1. 收旧线程的代码要放在 `m_running.store(true)` **之前**，否则提前 return
+   会把状态位留在「运行中」。
+2. `wait` 超时线程仍未停时**不要 delete**（QThread 析构会崩溃），
+   改为报错「上一次连点还没停下来，请稍后再试」。
+
+**复现必须是「只 stop 不 waitForStop」**。真实调用路径
+（`ui/main_window.cpp` 的 `onStop()`）只调 `stop()`；如果探针里顺手加了
+`waitForStop()`，两版都不崩，就复现不出来。这是浪费了一轮的原因。
+
+A/B 结果：QThread 版 6/6 轮 `start=1`、`QThreadStorage hits: 0`；
+stash 回 `std::thread` 版第 1 轮就 `EXIT=3`。
+
+真机冒烟（`scripts\exe-smoke2.ps1`，`SendInput` 连按 F9/F10 四轮）：
+`engine_start=4 engine_stop=5 QThreadStorage_hits=0`。
+**注意 `INPUT` 结构体在 64 位下必须显式 40 字节**（`[StructLayout(LayoutKind.Explicit, Size=40)]`），
+默认顺序布局算出 32 字节会让 `SendInput` 静默失败、热键永不触发。
+
+---
+
 
 ## 用 GitHub Actions 自动打包
 

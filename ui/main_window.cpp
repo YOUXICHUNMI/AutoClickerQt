@@ -10,6 +10,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QCursor>
 #include <QComboBox>
 #include <QCompleter>
 #include <QDebug>
@@ -30,6 +31,8 @@
 #include <QMovie>
 #include <QPushButton>
 #include <QScreen>
+#include <QShowEvent>
+#include <QWindow>
 #include <QScrollArea>
 #include <QSize>
 #include <QSpinBox>
@@ -406,11 +409,12 @@ void MainWindow::buildUi() {
 }
 
 void MainWindow::applyDefaultSize() {
-    resize(820, 720);
-    if (layout()) {
-        layout()->activate();
-    }
-
+    // 尺寸要按「这台窗口最终会落在哪个屏幕」来算，不能用 primaryScreen()：
+    // 本机是双屏（主屏 1920x1080 dpr=1.0，副屏 dpr=1.5），构造阶段窗口还没有
+    // 所属屏幕，取 primaryScreen() 会在一部分运行里拿到副屏的 DPR 1.5，于是
+    // 900x928 被放大成 1350x1392、y 变成 -151，整个窗口跑到屏幕外，
+    // 点击命中测试也随之错位。这里改为优先用 windowHandle()->screen()，
+    // 没有则用鼠标所在屏，最后才回落到 primaryScreen()。
     int contentHeight = 0;
     if (auto *scroll = findChild<QScrollArea *>(QStringLiteral("contentScroll"))) {
         if (QWidget *inner = scroll->widget()) {
@@ -418,18 +422,88 @@ void MainWindow::applyDefaultSize() {
         }
     }
 
-    QScreen *screen = QApplication::primaryScreen();
-    if (!screen) {
+    QScreen *screen = nullptr;
+    if (windowHandle() != nullptr) {
+        screen = windowHandle()->screen();
+    }
+    if (screen == nullptr) {
+        screen = QGuiApplication::screenAt(QCursor::pos());
+    }
+    if (screen == nullptr) {
+        screen = QGuiApplication::primaryScreen();
+    }
+    if (screen == nullptr) {
+        resize(820, 720);
+        if (layout()) {
+            layout()->activate();
+        }
         return;
     }
-    const QRect avail = screen->availableGeometry();
 
+    const QRect avail = screen->availableGeometry();
     const int width = qMin(900, qMax(minimumWidth(), avail.width() - 120));
     // 116 = 底部控制栏 ~60 + 状态栏 ~24 + 标题栏 ~32
     const int wantHeight = contentHeight > 0 ? contentHeight + 116 : 720;
     const int height = qMin(wantHeight, static_cast<int>(avail.height() * 0.9));
 
     resize(width, qMax(height, minimumHeight()));
+    if (layout()) {
+        layout()->activate();
+    }
+}
+
+void MainWindow::showEvent(QShowEvent *event) {
+    QMainWindow::showEvent(event);
+    // 首次显示时窗口才真正归属某个屏幕，此时再校正一次尺寸并夹回屏幕内，
+    // 防止构造阶段的尺寸被错误的 DPR 放大后沿用下来（见 applyDefaultSize）。
+    if (m_firstShow) {
+        m_firstShow = false;
+        applyDefaultSize();
+        clampToScreen();
+        // showEvent 里 frameGeometry() 还没算上系统加的那圈边框（实测差 16px），
+        // 所以等窗口真正映射完成（下一轮事件循环）再夹一次。
+        QTimer::singleShot(0, this, [this] { clampToScreen(); });
+    }
+}
+
+void MainWindow::clampToScreen() {
+    QScreen *screen = windowHandle() ? windowHandle()->screen()
+                                     : QGuiApplication::screenAt(frameGeometry().center());
+    if (!screen) {
+        screen = QGuiApplication::primaryScreen();
+    }
+    if (!screen) {
+        return;
+    }
+
+    const QRect avail = screen->availableGeometry();
+    const QRect frame = frameGeometry();
+
+    // 窗口比屏幕还大就先缩，否则再怎么挪都放不下。
+    if (frame.width() > avail.width() || frame.height() > avail.height()) {
+        resize(qMin(frame.width(), avail.width()), qMin(frame.height(), avail.height()));
+    }
+
+    const QRect f = frameGeometry();
+    // 四个方向都要夹：只夹右下角会让窗口顶部跑到屏幕外，
+    // 标题栏看不见也拖不回来（实测出现过 y = -151）。
+    int x = f.x();
+    int y = f.y();
+    if (x < avail.left()) {
+        x = avail.left();
+    }
+    if (y < avail.top()) {
+        y = avail.top();
+    }
+    if (x + f.width() > avail.right() + 1) {
+        x = qMax(avail.left(), avail.right() + 1 - f.width());
+    }
+    if (y + f.height() > avail.bottom() + 1) {
+        y = qMax(avail.top(), avail.bottom() + 1 - f.height());
+    }
+    if (x != f.x() || y != f.y()) {
+        move(x, y);
+    }
 }
 
 void MainWindow::buildTray() {

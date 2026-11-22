@@ -9,9 +9,10 @@
 
 #include <atomic>
 #include <functional>
-#include <thread>
 
 #include "utils/config_manager.h"
+
+class QThread;
 
 // 连点引擎：Win32 输入模拟 + 循环调度。
 //
@@ -123,7 +124,17 @@ private:
 
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stopRequested{false};
-    std::thread m_thread;
+
+    // 引擎线程用 QThread 而不是 std::thread。
+    //
+    // 为什么（实测踩过）：用 std::thread 时，程序退出会在日志里留下
+    //   QThreadStorage: entry 0 destroyed before end of thread 0x...
+    //   QThreadStorage: entry 1 destroyed before end of thread 0x...
+    // std::thread 创建的线程不是 Qt 的线程，Qt 的线程局部存储（QThreadStorage，
+    // QThreadData 内部就在用）没有机会在这个线程真正结束前清理。改用 QThread
+    // （QThread::create 工厂，不需要额外 moc 子类）后由 Qt 自己管线程生命周期，
+    // 线程局部存储会被正确析构，警告消失。
+    QThread *m_thread = nullptr;
     ActionCallback m_actionCallback;
 
     Profile m_profile;

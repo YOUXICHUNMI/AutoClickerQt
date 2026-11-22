@@ -150,4 +150,84 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endforeach ()
 endif ()
 
+# ------------------------------------------------------------ 自动打包目标
+# 直接把打包接进构建系统，不用再切到终端手敲脚本：
+#   cmake --build build/release --target deploy          只收集运行时依赖到 dist/
+#   cmake --build build/release --target package         出绿色目录 zip + 单文件 exe
+#   cmake --build build/release --target package-green   只出绿色目录 zip
+#   cmake --build build/release --target package-single  只出单文件 exe
+#
+# 之所以转调 script/package.ps1 而不是在这里重写一遍 windeployqt：
+# 脚本里已经处理了 dxcompiler 排除、qgif.dll 补全、platforms 校验、EnigmaVB 打包
+# 这些细节，两边各写一份迟早会发散。
+option(AUTOCLICKER_ENABLE_PACKAGE "注册 deploy / package 自定义构建目标" ON)
+
+if (AUTOCLICKER_ENABLE_PACKAGE)
+    if (WIN32)
+        find_program(AUTOCLICKER_POWERSHELL NAMES pwsh powershell)
+        if (NOT AUTOCLICKER_POWERSHELL)
+            message(WARNING "找不到 PowerShell，deploy/package 目标不会注册")
+        else ()
+            set(_pkg_cmd
+                    "${AUTOCLICKER_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/script/package.ps1"
+                    -Version "${PROJECT_VERSION}"
+                    -BuildDir "${CMAKE_BINARY_DIR}"
+                    -Force)
+
+            # deploy：只做 windeployqt + 铺到 dist/，不压缩（调试用，几秒完成）
+            add_custom_target(deploy
+                    COMMAND ${_pkg_cmd} -SkipBuild -SkipZip -SkipSingle
+                    DEPENDS AutoClicker
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    COMMENT "windeployqt：把 exe 与 Qt 运行时依赖铺到 dist/"
+                    VERBATIM)
+
+            # package：默认两种形态都出（绿色目录 zip + 单文件 exe，需要 EnigmaVB）
+            add_custom_target(package
+                    COMMAND ${_pkg_cmd}
+                    DEPENDS AutoClicker
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    COMMENT "打包：绿色目录 zip + 单文件 exe"
+                    VERBATIM)
+
+            add_custom_target(package-green
+                    COMMAND ${_pkg_cmd} -SkipSingle
+                    DEPENDS AutoClicker
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    COMMENT "打包：只出绿色目录 zip"
+                    VERBATIM)
+
+            add_custom_target(package-single
+                    COMMAND ${_pkg_cmd} -SingleExe
+                    DEPENDS AutoClicker
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    COMMENT "打包：只出单文件 exe"
+                    VERBATIM)
+        endif ()
+    else ()
+        # 非 Windows：没有 windeployqt，只把二进制打成一个 tar.gz。
+        # 运行时依赖由系统或 CI 提供（见 .github/workflows/build.yml 的 linux job）。
+        set(_linux_pkg "AutoClicker_${PROJECT_VERSION}_linux64.tar.gz")
+        add_custom_target(package
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_SOURCE_DIR}/dist/stage"
+                COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:AutoClicker>"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/dist/stage/AutoClicker"
+                COMMAND ${CMAKE_COMMAND} -E tar czf
+                        "${CMAKE_CURRENT_SOURCE_DIR}/dist/${_linux_pkg}"
+                        --format=gnutar
+                        AutoClicker
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/dist/stage"
+                DEPENDS AutoClicker
+                COMMENT "打包：${_linux_pkg}"
+                VERBATIM)
+        add_custom_target(deploy
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_SOURCE_DIR}/dist"
+                COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:AutoClicker>" "${CMAKE_CURRENT_SOURCE_DIR}/dist/"
+                DEPENDS AutoClicker
+                COMMENT "复制可执行文件到 dist/"
+                VERBATIM)
+    endif ()
+endif ()
+
 qt_finalize_executable(AutoClicker)
