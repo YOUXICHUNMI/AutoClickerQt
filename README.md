@@ -201,6 +201,37 @@ dist/
 cmake --build build/release --target package
 ```
 
+#### 在 CLion 里用（Debug 构建目录）
+
+CLion 默认把工程配到 `cmake-build-debug`（Debug）。**在这类目录下这四个 target 也能
+用，但它们会自己编一份 `build/release` 再打包**，而不是拿 Debug 产物去发包。
+
+原因：Qt SDK 的安装包通常只带 Release 版 `Qt6*.dll`，没有 `Qt6Cored.dll` 之类。
+Debug 版 exe 配 Release DLL，一启动就 `0xC0000135`（找不到 DLL）；体积还大一倍
+（Debug 单文件 27 MB，Release 17 MB）。所以脚本在 Debug 目录下会忽略
+`CMAKE_BUILD_TYPE=Debug`，改用独立的 Release 目录，产物始终可分发。
+
+配置时 CMake 会打印一行提示，二选一：
+
+```
+-- 打包目标：使用当前构建目录 D:/.../build/release
+-- 打包目标：当前是 Debug 构建，打包会自己编一份独立的 Release（Debug 产物无法直接分发）
+```
+
+CLion 里的操作：右侧 **CMake** 面板 → 展开 **AutoClicker**（或直接 Ctrl+Shift+A 搜
+target）→ 双击 `package` / `package-single` 等即可，输出在 Build 窗口。
+
+> 如果你的 CLion profile 用的是 Release（`Settings → Build → CMake → Build type:
+> Release`），那四个 target 会直接复用当前构建目录，速度更快。
+
+#### 关于输出乱码
+
+用 `cmd.exe` 或 IDE 调用 `powershell.exe` 时，控制台输出默认走系统 OEM 码页
+（中文机器 936/GBK），而 CLion、VS Code 按 UTF-8 读，中文就全变乱码。
+`package.ps1` 开头已经把 `[Console]::OutputEncoding` 和 `$OutputEncoding` 强制成
+UTF-8，所以现在在 CLion 的 Build 窗口里看到的是正常中文。
+
+
 
 ### exe 的图标与版本信息
 

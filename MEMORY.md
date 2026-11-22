@@ -638,6 +638,39 @@ dist 先清空再铺（否则旧产物被当依赖嵌进去，单文件从 17 MB
 而 `-SingleExe` 恰好让 `$wantGreen = $false` → 报「dist\ 里没有 AutoClicker.exe」。
 修法是把 `Invoke-Deploy` 提到分支外无条件执行，只在 `$wantGreen` 时压 zip。
 
+**第三个坑（2026-11-22 用户报的）：CLion 里跑 target 直接失败。**
+用户在 CLion 里双击 `package-single`，报两个错：
+
+1. **中文全是乱码**（`AutoClicker ����ű�`）。CLion 通过
+   `cmd.exe /C powershell.exe ...` 调用脚本，PowerShell 的
+   `[Console]::OutputEncoding` 是系统 OEM 码页（936/GBK），而 CLion 按 UTF-8 读。
+   修法：`package.ps1` 开头把 `[Console]::OutputEncoding` 和 `$OutputEncoding`
+   都设成 `[System.Text.Encoding]::UTF8`（包在 try 里，非交互宿主没有 Console 时会抛）。
+   验证：`cmd /c "powershell -File package.ps1 -CheckOnly > out.txt"` 后用
+   `UTF8.GetString` 解出来零个 U+FFFD。
+
+2. **`ninja: error: failed recompaction: Permission denied`**。
+   因为 target 把 `-BuildDir ${CMAKE_BINARY_DIR}` 传下去了（CLion 下就是
+   `cmake-build-debug`），脚本又去 `cmake -S . -B cmake-build-debug` 配置一遍 ——
+   可那个目录正被 CLion 自己的 ninja 占着，`.ninja_log` 写不进去。
+   **根子上的错误**是：target 已经 `DEPENDS AutoClicker` 保证编完了，脚本没必要再编。
+   修法：非 Debug 目录下传 `-SkipBuild`。
+
+**但仅仅 `-SkipBuild` 还不够，引出了第四个坑：Debug 版 exe 无法分发。**
+在 CLion 的 Debug 目录下跳过编译，打包的就是 Debug 版 exe：
+- 单文件从 17 MB 涨到 **27 MB**；
+- 一启动就 `0xC0000135`（找不到 DLL）——因为 **Qt SDK 只装 Release 库，没有
+  `Qt6Cored.dll` / `Qt6Widgetsd.dll`**（`E:\Qt\6.12.0\mingw_64\bin` 下一个 `*d.dll` 都没有）。
+
+最终方案（`CMakeLists.txt` 里判 `CMAKE_BUILD_TYPE`）：
+- **Release 构建目录**：传 `-BuildDir ${CMAKE_BINARY_DIR}` + `-SkipBuild`，直接复用。
+- **Debug 构建目录**：**不传 `-BuildDir`**（脚本回落默认的 `build/release`），
+  也**不传 `-SkipBuild`**（让脚本自己编那份 Release）。产物始终是可分发的 Release。
+
+配置时 CMake 会打印 `-- 打包目标：...` 一行说明当前走哪条路。
+代价是 CLion（Debug）下第一次打包会多编一份 Release（增量后约 1 秒）。
+
+
 ---
 
 ### 9.15 双屏 DPR 不同，窗口尺寸会被乘两遍

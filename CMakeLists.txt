@@ -168,16 +168,36 @@ if (AUTOCLICKER_ENABLE_PACKAGE)
         if (NOT AUTOCLICKER_POWERSHELL)
             message(WARNING "找不到 PowerShell，deploy/package 目标不会注册")
         else ()
+            # 只有 Release 构建能直接拿来打包 —— Qt SDK 的安装包里通常只带
+            # Release 版 Qt6*.dll，没有 Qt6Cored.dll，Debug 版 exe 一启动就
+            # 0xC0000135（找不到 DLL）。而 Debug 版体积还大一倍（27 MB vs 17 MB）。
+            #
+            # 所以在 Debug 构建目录下（CLion 默认就是 cmake-build-debug），
+            # target 不把 -BuildDir 传下去：让 package.ps1 自己用默认的
+            # build/release 目录重新配一份 Release 来打包，产物始终可用。
+            if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+                set(_pkg_build_args "")
+                set(_pkg_skip_build "")
+                set(_pkg_build_note
+                        "当前是 Debug 构建，打包会自己编一份独立的 Release（Debug 产物无法直接分发）")
+            else ()
+                set(_pkg_build_args -BuildDir "${CMAKE_BINARY_DIR}")
+                set(_pkg_skip_build "-SkipBuild")
+                set(_pkg_build_note "使用当前构建目录 ${CMAKE_BINARY_DIR}")
+            endif ()
+
             set(_pkg_cmd
                     "${AUTOCLICKER_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
                     -File "${CMAKE_CURRENT_SOURCE_DIR}/script/package.ps1"
                     -Version "${PROJECT_VERSION}"
-                    -BuildDir "${CMAKE_BINARY_DIR}"
+                    ${_pkg_build_args}
                     -Force)
+
+            message(STATUS "打包目标：${_pkg_build_note}")
 
             # deploy：只做 windeployqt + 铺到 dist/，不压缩（调试用，几秒完成）
             add_custom_target(deploy
-                    COMMAND ${_pkg_cmd} -SkipBuild -SkipZip -SkipSingle
+                    COMMAND ${_pkg_cmd} ${_pkg_skip_build} -SkipZip -SkipSingle
                     DEPENDS AutoClicker
                     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                     COMMENT "windeployqt：把 exe 与 Qt 运行时依赖铺到 dist/"
@@ -185,21 +205,21 @@ if (AUTOCLICKER_ENABLE_PACKAGE)
 
             # package：默认两种形态都出（绿色目录 zip + 单文件 exe，需要 EnigmaVB）
             add_custom_target(package
-                    COMMAND ${_pkg_cmd}
+                    COMMAND ${_pkg_cmd} ${_pkg_skip_build}
                     DEPENDS AutoClicker
                     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                     COMMENT "打包：绿色目录 zip + 单文件 exe"
                     VERBATIM)
 
             add_custom_target(package-green
-                    COMMAND ${_pkg_cmd} -SkipSingle
+                    COMMAND ${_pkg_cmd} ${_pkg_skip_build} -SkipSingle
                     DEPENDS AutoClicker
                     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                     COMMENT "打包：只出绿色目录 zip"
                     VERBATIM)
 
             add_custom_target(package-single
-                    COMMAND ${_pkg_cmd} -SingleExe
+                    COMMAND ${_pkg_cmd} ${_pkg_skip_build} -SingleExe
                     DEPENDS AutoClicker
                     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                     COMMENT "打包：只出单文件 exe"

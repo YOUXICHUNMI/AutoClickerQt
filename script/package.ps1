@@ -97,6 +97,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# 输出编码：CLion / VS Code 这类 IDE 通过 cmd.exe 调用 powershell.exe 时，
+# 控制台输出编码是系统 OEM 代码页（中文机器 936），而 IDE 按 UTF-8 读，
+# 结果所有中文变乱码。这里强制 UTF-8。写进 try 里是防老主机不支持。
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {
+    # 某些非交互宿主没有 Console，忽略即可
+}
+
 # ------------------------------------------------------------------ 路径与常量
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $ProjectDir = Split-Path -Parent $ScriptDir
